@@ -1,0 +1,23 @@
+# PlatformIO build output
+.pio/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+backend/greenhouse_wokwi/
+
+# Credentials — NEVER commit
+backend/config.py
+
+# Node
+backend/node_modules/
+backend/package-lock.json
+
+# Backup
+backup/
+
+# VS Code
+.vscode/

@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "author": "Tuấn Minh Vũ",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": 127.8,
+      "left": 239.1,
+      "rotate": 90,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-photoresistor-sensor",
+      "id": "ldr1",
+      "top": 22.4,
+      "left": -325.6,
+      "attrs": {}
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 85.1, "left": -278.6, "attrs": {} },
+    {
+      "type": "wokwi-servo",
+      "id": "servo1",
+      "top": -21.2,
+      "left": 240,
+      "attrs": { "horn": "cross" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": 75.6,
+      "left": 352.2,
+      "rotate": 90,
+      "attrs": { "color": "blue" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led2",
+      "top": 114,
+      "left": 352.2,
+      "rotate": 90,
+      "attrs": { "color": "green" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 90.35,
+      "left": 268.8,
+      "attrs": { "value": "220" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r2",
+      "top": 128.75,
+      "left": 268.8,
+      "attrs": { "value": "220" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led3",
+      "top": -99.6,
+      "left": -149.8,
+      "attrs": { "color": "red" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r3",
+      "top": -6.2,
+      "left": -164.05,
+      "rotate": 270,
+      "attrs": { "value": "220" }
+    },
+    { "type": "wokwi-pir-motion-sensor", "id": "pir1", "top": -92, "left": -103.38, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": -256.8,
+      "left": 117,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-lcd1602",
+      "id": "lcd1",
+      "top": -137.6,
+      "left": 178.4,
+      "attrs": { "pins": "i2c" }
+    },
+    {
+      "type": "wokwi-vcc",
+      "id": "vcc1",
+      "top": -110.4,
+      "left": 34.56,
+      "rotate": 270,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "dht1:VCC", "esp:3V3", "red", [ "h-86.4", "v-163.2", "h-124.8" ] ],
+    [ "dht1:GND", "esp:GND.3", "black", [ "h-76.8", "v-115.2" ] ],
+    [ "dht1:SDA", "esp:15", "green", [ "h-96", "v-9.5" ] ],
+    [ "ldr1:VCC", "esp:5V", "red", [ "h38.4", "v172.8" ] ],
+    [ "ldr1:GND", "esp:GND.1", "black", [ "h48", "v-0.4" ] ],
+    [ "esp:34", "ldr1:AO", "green", [ "h0" ] ],
+    [ "pot1:GND", "esp:GND.1", "black", [ "v9.6", "h201.6", "v-9.6" ] ],
+    [ "pot1:SIG", "esp:35", "green", [ "v28.8", "h230", "v-105.6" ] ],
+    [ "servo1:GND", "esp:GND.2", "black", [ "h0" ] ],
+    [ "servo1:V+", "esp:5V", "green", [ "h-57.6", "v182.5", "h-182.4" ] ],
+    [ "servo1:PWM", "esp:18", "green", [ "h-9.6", "v57.8" ] ],
+    [ "led1:C", "r1:2", "green", [ "h0" ] ],
+    [ "led2:C", "r2:2", "green", [ "h0" ] ],
+    [ "r1:1", "esp:GND.2", "green", [ "v0", "h-124.8", "v-67.2" ] ],
+    [ "r2:1", "esp:GND.2", "green", [ "v0", "h-124.8", "v-105.6" ] ],
+    [ "led1:A", "esp:5", "green", [ "h0", "v9.6" ] ],
+    [ "led2:A", "esp:4", "green", [ "h0" ] ],
+    [ "led3:C", "r3:2", "green", [ "v0" ] ],
+    [ "r3:1", "esp:GND.1", "green", [ "h0", "v124.8" ] ],
+    [ "pir1:VCC", "esp:5V", "red", [ "v201.6" ] ],
+    [ "pir1:OUT", "esp:14", "green", [ "v134.4", "h-0.14" ] ],
+    [ "pir1:GND", "esp:GND.1", "black", [ "v153.6", "h-0.26" ] ],
+    [ "bz1:1", "esp:GND.2", "green", [ "v0" ] ],
+    [ "bz1:2", "esp:23", "green", [ "v0" ] ],
+    [ "led3:A", "esp:27", "green", [ "v0" ] ],
+    [ "lcd1:SDA", "esp:21", "green", [ "h-19.2", "v153.8" ] ],
+    [ "lcd1:SCL", "esp:22", "green", [ "h-9.6", "v125.1" ] ],
+    [ "lcd1:VCC", "vcc1:VCC", "red", [ "h0" ] ],
+    [ "lcd1:GND", "esp:GND.2", "black", [ "h-67.2", "v9.6" ] ],
+    [ "pot1:VCC", "esp:3V3", "red", [ "v38.4", "h200.8", "v-163.2" ] ]
+  ],
+  "dependencies": {}
+}
