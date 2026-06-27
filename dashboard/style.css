@@ -1,0 +1,218 @@
+/* ─── Reset & Base ──────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0d1117;
+  --surface: #161b22;
+  --border:  #30363d;
+  --text:    #e6edf3;
+  --muted:   #8b949e;
+  --green:   #3fb950;
+  --blue:    #58a6ff;
+  --yellow:  #e3b341;
+  --orange:  #d29922;
+  --red:     #f85149;
+  --purple:  #bc8cff;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ─── Header ────────────────────────────────────── */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-left { display: flex; align-items: center; gap: 10px; }
+.logo { font-size: 22px; }
+h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
+
+.header-right { display: flex; align-items: center; gap: 10px; }
+
+.status-dot {
+  font-size: 11px;
+  color: var(--muted);
+  transition: color 0.3s;
+}
+.status-dot.live  { color: var(--green); animation: blink 2s ease-in-out infinite; }
+.status-dot.error { color: var(--red); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.status-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.last-update  { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ─── Section wrapper ───────────────────────────── */
+.section {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* ─── Sensor Cards ──────────────────────────────── */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .cards-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 14px 14px;
+  text-align: center;
+  transition: border-color 0.3s;
+}
+.card-icon  { font-size: 20px; margin-bottom: 6px; }
+.card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.card-value { font-size: 38px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; color: var(--blue); transition: color 0.3s; }
+.card-unit  { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+.card.good   { border-color: #2a4a2e; }
+.card.warn   { border-color: #4a3e14; }
+.card.danger { border-color: #4a1a1a; }
+.card.good   .card-value { color: var(--green); }
+.card.warn   .card-value { color: var(--yellow); }
+.card.danger .card-value { color: var(--red); }
+
+/* ─── Plant Health ──────────────────────────────── */
+.plant-health-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.plant-badge {
+  display: inline-block;
+  padding: 5px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+.plant-badge.GOOD     { background: #122218; border-color: var(--green);  color: var(--green); }
+.plant-badge.SLOW     { background: #1e1a0a; border-color: var(--yellow); color: var(--yellow); }
+.plant-badge.DECLINE  { background: #1e1500; border-color: var(--orange); color: var(--orange); }
+.plant-badge.CRITICAL { background: #1e0a0a; border-color: var(--red);    color: var(--red); }
+.plant-badge.DEAD     { background: #120c1c; border-color: var(--purple); color: var(--purple); }
+.plant-hint { font-size: 12px; color: var(--muted); }
+
+/* ─── Actuator + Control Panel ──────────────────── */
+.panel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 720px) { .panel-grid { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.panel-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* Actuator list */
+.actuator-list { display: flex; flex-direction: column; gap: 11px; }
+.actuator-row  { display: flex; align-items: center; gap: 10px; }
+.actuator-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+.actuator-name { flex: 1; font-size: 13px; }
+.actuator-badge {
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  min-width: 48px;
+  text-align: center;
+  transition: all 0.2s;
+}
+.actuator-badge.on    { background: #0a2015; border-color: var(--green);  color: var(--green); }
+.actuator-badge.off   { background: var(--bg); border-color: var(--border); color: var(--muted); }
+.actuator-badge.alert { background: #200a0a; border-color: var(--red); color: var(--red); }
+
+/* Control list */
+.control-list { display: flex; flex-direction: column; gap: 14px; }
+.control-row  { display: flex; align-items: center; gap: 12px; }
+.control-label { font-size: 13px; min-width: 86px; flex-shrink: 0; }
+
+.btn-group { display: flex; gap: 5px; flex-wrap: wrap; }
+.btn-ctrl {
+  padding: 5px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-ctrl:hover { border-color: var(--blue); color: var(--blue); }
+.btn-ctrl.active { background: #0c1d35; border-color: var(--blue); color: var(--blue); }
+
+.control-note {
+  margin-top: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+/* ─── Charts ────────────────────────────────────── */
+.chart-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px 14px;
+  margin-bottom: 14px;
+}
+.chart-wrap:last-child { margin-bottom: 0; }
+
+.chart-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.chart-box { position: relative; height: 220px; }

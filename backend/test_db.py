@@ -64,7 +64,7 @@ def check_latest(cursor, n=5):
     cursor.execute(f"""
         SELECT id, temperature, humidity, soil_moisture,
                light_level, motion_detected,
-               fan_status, pump_status, servo_angle, created_at
+               fan_status, pump_status, servo_angle, light_status, created_at
         FROM sensor_data
         ORDER BY id DESC
         LIMIT {n}
@@ -75,10 +75,10 @@ def check_latest(cursor, n=5):
         return
 
     for r in rows:
-        print(f"  [#{r[0]}]  {r[9]}")
+        print(f"  [#{r[0]}]  {r[10]}")
         print(f"    Temp={r[1]}°C  Hum={r[2]}%  Soil={r[3]}%  Light={r[4]}%")
         print(f"    Motion={'YES' if r[5] else 'no '}  Fan={'ON ' if r[6] else 'off'}  "
-              f"Pump={'ON ' if r[7] else 'off'}  Roof={r[8]}°")
+              f"Pump={'ON ' if r[7] else 'off'}  Roof={r[8]}°  MotionLight={'ON ' if r[9] else 'off'}")
         print()
 
 # ─────────────────────────────────────────────
@@ -116,7 +116,8 @@ def check_actuators(cursor):
         SELECT
             SUM(fan_status),    COUNT(*),
             SUM(pump_status),
-            SUM(motion_detected)
+            SUM(motion_detected),
+            SUM(light_status)
         FROM sensor_data
     """)
     r = cursor.fetchone()
@@ -124,16 +125,18 @@ def check_actuators(cursor):
         print("  No data yet.\n")
         return
 
-    total = r[1]
-    fan   = int(r[0] or 0)
-    pump  = int(r[2] or 0)
+    total  = r[1]
+    fan    = int(r[0] or 0)
+    pump   = int(r[2] or 0)
     motion = int(r[3] or 0)
+    light  = int(r[4] or 0)
 
     def pct(n): return f"{n}/{total} ({100*n//total}%)"
 
     print(f"  Fan ON          : {pct(fan)}")
     print(f"  Pump ON         : {pct(pump)}")
     print(f"  Motion detected : {pct(motion)}")
+    print(f"  Motion light ON : {pct(light)}")
     print()
 
 # ─────────────────────────────────────────────

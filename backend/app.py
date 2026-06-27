@@ -6,6 +6,10 @@ from db import get_cursor, commit
 app = Flask(__name__)
 CORS(app)
 
+# In-memory command store — reset khi Flask khởi động lại
+# None = auto (firmware tự điều khiển), True/False = override
+_commands = {"fan": None, "pump": None, "servo": None}
+
 
 # ==========================
 # HEALTH CHECK
@@ -52,9 +56,10 @@ def save_sensor_data():
             motion_detected,
             fan_status,
             pump_status,
-            servo_angle
+            servo_angle,
+            light_status
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """
 
         values = (
@@ -65,7 +70,8 @@ def save_sensor_data():
             data["motion_detected"],
             data["fan_status"],
             data["pump_status"],
-            data["servo_angle"]
+            data["servo_angle"],
+            data.get("light_status", False)
         )
 
         cursor = get_cursor()
@@ -123,7 +129,8 @@ def latest_data():
             "fan_status": bool(row[6]),
             "pump_status": bool(row[7]),
             "servo_angle": row[8],
-            "created_at": str(row[9])
+            "light_status": bool(row[9]),
+            "created_at": str(row[10])
         })
 
     except Exception as e:
@@ -166,7 +173,8 @@ def history():
                 "fan_status": bool(row[6]),
                 "pump_status": bool(row[7]),
                 "servo_angle": row[8],
-                "created_at": str(row[9])
+                "light_status": bool(row[9]),
+                "created_at": str(row[10])
             })
 
         return jsonify(result)
@@ -176,6 +184,28 @@ def history():
         return jsonify({
             "error": str(e)
         }), 500
+
+
+# ==========================
+# GET COMMANDS (ESP32 polls this)
+# ==========================
+@app.route("/api/commands", methods=["GET"])
+def get_commands():
+    return jsonify(_commands)
+
+
+# ==========================
+# POST CONTROL (dashboard sends commands)
+# ==========================
+@app.route("/api/control", methods=["POST"])
+def set_control():
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"error": "Invalid JSON"}), 400
+    for key in ("fan", "pump", "servo"):
+        if key in data:
+            _commands[key] = data[key]
+    return jsonify({"ok": True, "commands": _commands})
 
 
 # ==========================

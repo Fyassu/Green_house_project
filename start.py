@@ -4,7 +4,6 @@ import sys
 import json
 import time
 import subprocess
-import webbrowser
 import urllib.request
 
 PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -78,15 +77,24 @@ def get_ngrok_url(timeout=30):
 
 # ─────────────────────────────────────────────
 def update_sketch(ngrok_url):
-    endpoint = ngrok_url.rstrip("/") + "/api/sensor-data"
+    base = ngrok_url.rstrip("/")
     with open(SKETCH_PATH, "r", encoding="utf-8") as f:
         content = f.read()
 
+    # New style: const char* NGROK_BASE = "https://..."
     updated = re.sub(
-        r'"https://[^"]+/api/sensor-data"',
-        f'"{endpoint}"',
+        r'(const char\*\s+NGROK_BASE\s*=\s*)"https://[^"]+"',
+        rf'\1"{base}"',
         content,
     )
+
+    # Legacy fallback: inline URL in http.begin()
+    if updated == content:
+        updated = re.sub(
+            r'"https://[^"]+/api/sensor-data"',
+            f'"{base}/api/sensor-data"',
+            content,
+        )
 
     if updated == content:
         print(f"      URL already up-to-date")
@@ -94,7 +102,7 @@ def update_sketch(ngrok_url):
 
     with open(SKETCH_PATH, "w", encoding="utf-8") as f:
         f.write(updated)
-    print(f"      sketch.ino  →  {endpoint}")
+    print(f"      sketch.ino  →  {base}")
     return True
 
 # ─────────────────────────────────────────────
@@ -112,9 +120,9 @@ def build_firmware(url_changed):
 # ─────────────────────────────────────────────
 def print_summary(ngrok_url):
     print("══════════════════════════════════════════")
-    print(f"  Flask   →  http://localhost:{FLASK_PORT}")
-    print(f"  ngrok   →  {ngrok_url}")
-    print(f"  API     →  {ngrok_url}/api/sensor-data")
+    print(f"  Flask      →  http://localhost:{FLASK_PORT}")
+    print(f"  ngrok      →  {ngrok_url}")
+    print(f"  Dashboard  →  open dashboard/index.html in browser")
     print("══════════════════════════════════════════")
     print("  Firmware ready — start Wokwi in VS Code")
     print("  (F1 → \"Wokwi: Start Simulator\")")

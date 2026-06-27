@@ -24,9 +24,21 @@ def _ensure_table():
             fan_status      BOOLEAN,
             pump_status     BOOLEAN,
             servo_angle     INT,
+            light_status    BOOLEAN DEFAULT FALSE,
             created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Thêm cột light_status nếu bảng cũ chưa có (schema migration)
+    cur.execute("""
+        SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME   = 'sensor_data'
+          AND COLUMN_NAME  = 'light_status'
+    """)
+    if cur.fetchone()[0] == 0:
+        cur.execute(
+            "ALTER TABLE sensor_data ADD COLUMN light_status BOOLEAN DEFAULT FALSE"
+        )
     db.commit()
     cur.close()
 

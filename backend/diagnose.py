@@ -30,6 +30,7 @@ MOCK_PAYLOAD = json.dumps({
     "fan_status":     False,
     "pump_status":    False,
     "servo_angle":    90,
+    "light_status":   False,
 }).encode()
 
 SEP = "─" * 56

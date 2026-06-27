@@ -7,7 +7,8 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
-const char* ssid = "Wokwi-GUEST";
+const char* ssid      = "Wokwi-GUEST";
+const char* NGROK_BASE = "https://reclusive-penpal-duress.ngrok-free.dev";
 
 
 // PIN CONFIG
@@ -51,11 +52,20 @@ int lightPercent = 0;
 
 bool motionDetected = false;
 
+// COMMAND OVERRIDES (-1 = auto, 0/1 = override for fan/pump, 0/45/90 = servo)
+int8_t fanCmd   = -1;
+int8_t pumpCmd  = -1;
+int    servoCmd = -1;
+
 // ACTUATOR STATES
 bool fanState = false;
 bool pumpState = false;
+bool lightStatus = false;
 
 int roofPosition = 90;
+
+unsigned long motionLightOnTime = 0;
+bool motionLightEverTriggered = false;
 
 void sendData()
 {
@@ -68,7 +78,7 @@ void sendData()
 
     http.begin(
       client,
-      "https://reclusive-penpal-duress.ngrok-free.dev/api/sensor-data"
+      String(NGROK_BASE) + "/api/sensor-data"
     );
 
     http.addHeader("Content-Type", "application/json");
@@ -82,7 +92,8 @@ void sendData()
     json += "\"motion_detected\":" + String(motionDetected ? "true" : "false") + ",";
     json += "\"fan_status\":"     + String(fanState    ? "true" : "false") + ",";
     json += "\"pump_status\":"    + String(pumpState   ? "true" : "false") + ",";
-    json += "\"servo_angle\":"    + String(roofPosition);
+    json += "\"servo_angle\":"    + String(roofPosition)                      + ",";
+    json += "\"light_status\":"   + String(lightStatus ? "true" : "false");
     json += "}";
 
     int responseCode = http.POST(json);
@@ -99,7 +110,58 @@ void sendData()
   }
 }
 
-unsigned long lastSend = -10000UL;
+unsigned long lastSend    = -10000UL;
+unsigned long lastCmdPoll = 0;
+
+// COMMAND POLL
+// Trả về: -1=null(auto), 0=false, 1=true
+int8_t parseJsonBool(const String& json, const String& key) {
+  String search = "\"" + key + "\":";
+  int idx = json.indexOf(search);
+  if (idx < 0) return -1;
+  idx += search.length();
+  while (idx < (int)json.length() && json[idx] == ' ') idx++;
+  if (json.substring(idx, idx + 4) == "null")  return -1;
+  if (json.substring(idx, idx + 4) == "true")  return 1;
+  if (json.substring(idx, idx + 5) == "false") return 0;
+  return -1;
+}
+
+// Trả về: -1=null(auto), >=0 = giá trị số
+int parseJsonInt(const String& json, const String& key) {
+  String search = "\"" + key + "\":";
+  int idx = json.indexOf(search);
+  if (idx < 0) return -1;
+  idx += search.length();
+  while (idx < (int)json.length() && json[idx] == ' ') idx++;
+  if (json.substring(idx, idx + 4) == "null") return -1;
+  int val = 0;
+  while (idx < (int)json.length() && isdigit((unsigned char)json[idx])) {
+    val = val * 10 + (json[idx] - '0');
+    idx++;
+  }
+  return val;
+}
+
+void pollCommands() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.begin(client, String(NGROK_BASE) + "/api/commands");
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  int code = http.GET();
+  if (code == 200) {
+    String body = http.getString();
+    fanCmd   = parseJsonBool(body, "fan");
+    pumpCmd  = parseJsonBool(body, "pump");
+    servoCmd = parseJsonInt(body,  "servo");
+  }
+  http.end();
+}
 
 // BUZZER
 void playTone(int freq, int dur) {
@@ -231,26 +293,14 @@ PlantState evaluatePlant() {
 // FAN CONTROL
 void controlFan() {
 
-  if(
-      !fanState &&
-      temperature > 30
-    ) {
-
-    fanState = true;
+  if (fanCmd >= 0) {
+    fanState = (fanCmd == 1);        // override từ dashboard
+  } else {
+    if (!fanState && temperature > 30) fanState = true;
+    if ( fanState && temperature < 28) fanState = false;
   }
 
-  if(
-      fanState &&
-      temperature < 28
-    ) {
-
-    fanState = false;
-  }
-
-  digitalWrite(
-      FAN_LED_PIN,
-      fanState
-  );
+  digitalWrite(FAN_LED_PIN, fanState);
 }
 
 // PUMP CONTROL
@@ -258,34 +308,16 @@ void controlPump() {
 
   static bool lastPump = false;
 
-  if(
-      !pumpState &&
-      soilPercent < 45
-    ) {
-
-    pumpState = true;
+  if (pumpCmd >= 0) {
+    pumpState = (pumpCmd == 1);      // override từ dashboard
+  } else {
+    if (!pumpState && soilPercent < 45) pumpState = true;
+    if ( pumpState && soilPercent > 65) pumpState = false;
   }
 
-  if(
-      pumpState &&
-      soilPercent > 65
-    ) {
+  digitalWrite(PUMP_LED_PIN, pumpState);
 
-    pumpState = false;
-  }
-
-  digitalWrite(
-      PUMP_LED_PIN,
-      pumpState
-  );
-
-  if(
-      pumpState &&
-      !lastPump
-    ) {
-
-    irrigationMelody();
-  }
+  if (pumpState && !lastPump) irrigationMelody();
 
   lastPump = pumpState;
 }
@@ -308,53 +340,41 @@ void moveRoof(int target) {
 
 void controlRoof() {
 
-  int hour =
-      currentHour();
-
-  if(
-      temperature > 34
-    ) {
-
-    moveRoof(0);
+  if (servoCmd >= 0) {
+    moveRoof(servoCmd);              // override từ dashboard
     return;
   }
 
-  if(
-      hour >= 11 &&
-      hour <= 14 &&
-      lightPercent > 75
-    ) {
+  int hour = currentHour();
 
-    moveRoof(45);
-    return;
-  }
-
+  if (temperature > 34)                          { moveRoof(0);  return; }
+  if (hour >= 11 && hour <= 14 && lightPercent > 75) { moveRoof(45); return; }
   moveRoof(90);
 }
 
-// SECURITY
-void controlSecurity() {
+// MOTION LIGHT
+void controlMotionLight() {
 
+  // Kích hoạt đèn khi phát hiện chuyển động + ánh sáng yếu (< 25%)
+  if (motionDetected && lightPercent < 25) {
+    motionLightOnTime = millis();
+    motionLightEverTriggered = true;
+  }
+
+  // Giữ đèn sáng trong 15 giây kể từ lần kích hoạt cuối
+  lightStatus =
+      motionLightEverTriggered &&
+      (millis() - motionLightOnTime < 15000UL);
+
+  digitalWrite(ALARM_LED_PIN, lightStatus ? HIGH : LOW);
+
+  // Còi báo động riêng: ban đêm + chuyển động
   bool night =
       currentHour() >= 18 ||
       currentHour() < 6;
 
-  if(
-      night &&
-      motionDetected
-    ) {
-
-    digitalWrite(
-        ALARM_LED_PIN,
-        HIGH
-    );
-  }
-  else {
-
-    digitalWrite(
-        ALARM_LED_PIN,
-        LOW
-    );
+  if (night && motionDetected) {
+    warningMelody();
   }
 }
 
@@ -478,6 +498,11 @@ void printStatus() {
       "Roof: %d\n",
       roofPosition
   );
+
+  Serial.printf(
+      "Light: %s\n",
+      lightStatus ? "ON" : "OFF"
+  );
 }
 
 // SETUP
@@ -544,7 +569,7 @@ void loop() {
 
   controlRoof();
 
-  controlSecurity();
+  controlMotionLight();
 
   criticalMonitor();
 
@@ -556,6 +581,12 @@ void loop() {
   {
       sendData();
       lastSend = millis();
+  }
+
+  if (millis() - lastCmdPoll >= 5000)
+  {
+      pollCommands();
+      lastCmdPoll = millis();
   }
 
   delay(1000);

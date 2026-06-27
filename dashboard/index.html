@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Greenhouse Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header>
+    <div class="header-left">
+      <span class="logo">🌿</span>
+      <h1>Smart Greenhouse</h1>
+    </div>
+    <div class="header-right">
+      <span class="status-dot" id="status-dot">●</span>
+      <span class="status-label" id="status-label">Đang kết nối...</span>
+      <span class="last-update" id="last-update"></span>
+    </div>
+  </header>
+
+  <!-- ── Sensor Cards ─────────────────────────── -->
+  <section class="section">
+    <div class="cards-grid">
+      <div class="card" id="card-temp">
+        <div class="card-icon">🌡</div>
+        <div class="card-label">Nhiệt độ</div>
+        <div class="card-value" id="val-temp">--</div>
+        <div class="card-unit">°C</div>
+      </div>
+      <div class="card" id="card-hum">
+        <div class="card-icon">💧</div>
+        <div class="card-label">Độ ẩm</div>
+        <div class="card-value" id="val-hum">--</div>
+        <div class="card-unit">%</div>
+      </div>
+      <div class="card" id="card-soil">
+        <div class="card-icon">🌱</div>
+        <div class="card-label">Độ ẩm đất</div>
+        <div class="card-value" id="val-soil">--</div>
+        <div class="card-unit">%</div>
+      </div>
+      <div class="card" id="card-light">
+        <div class="card-icon">☀</div>
+        <div class="card-label">Ánh sáng</div>
+        <div class="card-value" id="val-light">--</div>
+        <div class="card-unit">%</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Plant Health ──────────────────────────── -->
+  <section class="section">
+    <div class="plant-health-bar">
+      <span class="section-label">Sức khỏe cây</span>
+      <span class="plant-badge" id="plant-badge">--</span>
+      <span class="plant-hint" id="plant-hint"></span>
+    </div>
+  </section>
+
+  <!-- ── Actuators + Control ───────────────────── -->
+  <section class="section">
+    <div class="panel-grid">
+
+      <div class="panel">
+        <div class="panel-title">Trạng thái thiết bị</div>
+        <div class="actuator-list">
+          <div class="actuator-row">
+            <span class="actuator-icon">🌀</span>
+            <span class="actuator-name">Quạt</span>
+            <span class="actuator-badge" id="act-fan">--</span>
+          </div>
+          <div class="actuator-row">
+            <span class="actuator-icon">💦</span>
+            <span class="actuator-name">Bơm tưới</span>
+            <span class="actuator-badge" id="act-pump">--</span>
+          </div>
+          <div class="actuator-row">
+            <span class="actuator-icon">🏠</span>
+            <span class="actuator-name">Mái che</span>
+            <span class="actuator-badge" id="act-roof">--</span>
+          </div>
+          <div class="actuator-row">
+            <span class="actuator-icon">💡</span>
+            <span class="actuator-name">Đèn chuyển động</span>
+            <span class="actuator-badge" id="act-light">--</span>
+          </div>
+          <div class="actuator-row">
+            <span class="actuator-icon">👁</span>
+            <span class="actuator-name">Chuyển động</span>
+            <span class="actuator-badge" id="act-motion">--</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Điều khiển thủ công</div>
+        <div class="control-list">
+          <div class="control-row">
+            <span class="control-label">🌀 Quạt</span>
+            <div class="btn-group" data-device="fan">
+              <button class="btn-ctrl" data-val="null">AUTO</button>
+              <button class="btn-ctrl" data-val="true">ON</button>
+              <button class="btn-ctrl" data-val="false">OFF</button>
+            </div>
+          </div>
+          <div class="control-row">
+            <span class="control-label">💦 Bơm</span>
+            <div class="btn-group" data-device="pump">
+              <button class="btn-ctrl" data-val="null">AUTO</button>
+              <button class="btn-ctrl" data-val="true">ON</button>
+              <button class="btn-ctrl" data-val="false">OFF</button>
+            </div>
+          </div>
+          <div class="control-row">
+            <span class="control-label">🏠 Mái</span>
+            <div class="btn-group" data-device="servo">
+              <button class="btn-ctrl" data-val="null">AUTO</button>
+              <button class="btn-ctrl" data-val="0">Mở 0°</button>
+              <button class="btn-ctrl" data-val="45">Nửa 45°</button>
+              <button class="btn-ctrl" data-val="90">Đóng 90°</button>
+            </div>
+          </div>
+        </div>
+        <p class="control-note">AUTO — firmware tự điều khiển theo ngưỡng cảm biến</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── History Charts ────────────────────────── -->
+  <section class="section">
+    <div class="chart-wrap">
+      <div class="chart-title">Nhiệt độ & Độ ẩm không khí</div>
+      <div class="chart-box"><canvas id="chart-env"></canvas></div>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">Độ ẩm đất & Ánh sáng</div>
+      <div class="chart-box"><canvas id="chart-soil"></canvas></div>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
