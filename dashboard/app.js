@@ -143,6 +143,13 @@ function simTick() {
   s.soil  = clampEnv("soil",  s.soil);
   s.light = clampEnv("light", s.light);
 
+  // 4b. Continuous motion — light tracks current brightness in real time
+  if (s.motionActive) {
+    s.motion  = true;
+    s.lightOn = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
+    _simMotionUpdateUI();  // sync button text if light slider changed
+  }
+
   // 5. Build display record
   const d = {
     temperature:     parseFloat(s.temp.toFixed(1)),
@@ -152,8 +159,8 @@ function simTick() {
     fan_status:      s.fan,
     pump_status:     s.pump,
     servo_angle:     s.roof,
-    light_status:    false,
-    motion_detected: false,
+    light_status:    s.lightOn,
+    motion_detected: s.motion,
     created_at:      new Date().toISOString(),
     plant_health:    evaluatePlant(s.temp, s.soil, s.hum),
   };
@@ -178,7 +185,9 @@ function startSim() {
   const light = parseFloat(document.getElementById("sim-light").value);
 
   simState   = { temp, hum, soil, light, fan: false, pump: false, roof: 90,
-                 fanCmd: null, pumpCmd: null, roofCmd: null };
+                 fanCmd: null, pumpCmd: null, roofCmd: null,
+                 motion: false, motionActive: false, lightOn: false, motionTimer: null };
+  document.getElementById("btn-sim-motion").disabled = false;
   simHistory = [];
 
   document.getElementById("btn-sim-start").disabled = true;
@@ -196,20 +205,101 @@ function stopSim() {
   if (simInterval) { clearInterval(simInterval); simInterval = null; }
   simHistory = [];
 
-  document.getElementById("btn-sim-start").disabled = false;
-  document.getElementById("btn-sim-stop").disabled  = true;
+  if (simState && simState.motionTimer) clearTimeout(simState.motionTimer);
+  document.getElementById("btn-sim-start").disabled  = false;
+  document.getElementById("btn-sim-stop").disabled   = true;
+  document.getElementById("btn-sim-motion").disabled = true;
   document.getElementById("btn-sim-start").classList.remove("running");
   document.getElementById("demo-panel").classList.remove("running");
   document.querySelectorAll(".btn-preset").forEach(b => b.classList.remove("active"));
+  _simMotionReset();
 
   setStatus("live", "LIVE");
+  connectSSE();
   fetchLatest();
   fetchHistory();
+}
+
+function bindWokwiPanel() {
+  const wrap   = document.getElementById("wokwi-embed-wrap");
+  const btn    = document.getElementById("btn-wokwi-expand");
+  const toggle = document.getElementById("wokwi-toggle");
+
+  function setOpen(open) {
+    wrap.hidden = !open;
+    btn.textContent = open ? "▲ Ẩn" : "▼ Hiện";
+    btn.classList.toggle("open", open);
+  }
+
+  toggle.addEventListener("click", (e) => {
+    if (e.target.closest("a")) return;   // "Mở tab riêng" — don't toggle
+    setOpen(wrap.hidden);
+  });
+}
+
+function _simMotionReset() {
+  const btn = document.getElementById("btn-sim-motion");
+  const st  = document.getElementById("demo-motion-status");
+  btn.classList.remove("triggered");
+  btn.textContent    = "👁 Bật chuyển động";
+  st.textContent     = "Đèn bật khi ánh sáng < 25%";
+  st.classList.remove("active");
+}
+
+function _simMotionUpdateUI() {
+  if (!simState) return;
+  const s   = simState;
+  const btn = document.getElementById("btn-sim-motion");
+  const st  = document.getElementById("demo-motion-status");
+
+  if (s.motionActive) {
+    const dark = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
+    btn.classList.add("triggered");
+    btn.textContent = "🚫 Tắt chuyển động";
+    st.classList.add("active");
+    st.textContent  = dark
+      ? `Đèn SÁNG — ánh sáng ${Math.round(s.light)}% < 25%`
+      : `Chuyển động bật — ánh sáng ${Math.round(s.light)}% ≥ 25%, đèn không kích hoạt`;
+  } else {
+    _simMotionReset();
+  }
+}
+
+function toggleMotion() {
+  if (!simState) return;
+  const s = simState;
+
+  if (s.motionActive) {
+    // Tắt chuyển động — bắt đầu đếm ngược tắt đèn
+    s.motionActive = false;
+    s.motion       = false;
+    if (s.motionTimer) clearTimeout(s.motionTimer);
+    if (s.lightOn) {
+      s.motionTimer = setTimeout(() => {
+        if (simState === s) { s.lightOn = false; s.motionTimer = null; _simMotionReset(); }
+      }, ACTUATOR_RULES.motionLight.durationMs);
+      const st = document.getElementById("demo-motion-status");
+      st.textContent = `Đèn tắt sau ${(ACTUATOR_RULES.motionLight.durationMs / 1000).toFixed(1)}s...`;
+      st.classList.add("active");
+      document.getElementById("btn-sim-motion").classList.remove("triggered");
+      document.getElementById("btn-sim-motion").textContent = "👁 Bật chuyển động";
+    } else {
+      _simMotionReset();
+    }
+  } else {
+    // Bật chuyển động liên tục
+    if (s.motionTimer) { clearTimeout(s.motionTimer); s.motionTimer = null; }
+    s.motionActive = true;
+    s.motion       = true;
+    s.lightOn      = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
+    _simMotionUpdateUI();
+  }
 }
 
 function bindSimPanel() {
   document.getElementById("btn-sim-start").addEventListener("click", startSim);
   document.getElementById("btn-sim-stop").addEventListener("click",  stopSim);
+  document.getElementById("btn-sim-motion").addEventListener("click", toggleMotion);
 
   // Slider → live value display
   [["sim-temp",  "sim-temp-val",  v => parseFloat(v).toFixed(1) + "°C"],
@@ -353,6 +443,66 @@ function updateActuators(d) {
   const motionEl = document.getElementById("act-motion");
   motionEl.textContent = d.motion_detected ? "YES" : "no";
   motionEl.className   = d.motion_detected ? "actuator-badge alert" : "actuator-badge off";
+}
+
+// ─── Server-Sent Events (real-time Wokwi sync) ────
+let sseSource = null;
+let sseActive = false;
+
+function appendToCharts(row) {
+  const label = new Date((row.created_at || "").replace(" ", "T"))
+    .toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const MAX = 100;
+  [chartTemp, chartHum, chartSoil].forEach(ch => {
+    if (ch.data.labels.length >= MAX) {
+      ch.data.labels.shift();
+      ch.data.datasets.forEach(ds => ds.data.shift());
+    }
+  });
+  chartTemp.data.labels.push(label);
+  chartTemp.data.datasets[0].data.push(row.temperature);
+  chartTemp.data.datasets[1].data.push(ACTUATOR_RULES.fan.onAbove);
+  chartTemp.data.datasets[2].data.push(ACTUATOR_RULES.roof.fullOpenAbove);
+  chartTemp.update("none");
+
+  chartHum.data.labels.push(label);
+  chartHum.data.datasets[0].data.push(row.humidity);
+  chartHum.update("none");
+
+  chartSoil.data.labels.push(label);
+  chartSoil.data.datasets[0].data.push(row.soil_moisture);
+  chartSoil.data.datasets[1].data.push(row.light_level);
+  chartSoil.data.datasets[2].data.push(ACTUATOR_RULES.pump.onBelow);
+  chartSoil.data.datasets[3].data.push(ACTUATOR_RULES.pump.offAbove);
+  chartSoil.update("none");
+}
+
+function connectSSE() {
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  sseSource = new EventSource(API + "/api/stream");
+
+  sseSource.onopen = () => { sseActive = true; };
+
+  sseSource.onmessage = (e) => {
+    if (simState) return;
+    let d;
+    try { d = JSON.parse(e.data); } catch { return; }
+    if (!d || d.temperature == null) return;
+    sseActive = true;
+    setStatus("live", "LIVE");
+    setLastUpdate(d.created_at);
+    updateCards(d);
+    updatePlantHealth(d);
+    updateActuators(d);
+    appendToCharts(d);
+  };
+
+  sseSource.onerror = () => {
+    sseActive = false;
+    sseSource.close();
+    sseSource = null;
+    setTimeout(connectSSE, 5000);
+  };
 }
 
 // ─── Fetch latest ─────────────────────────────────
@@ -638,7 +788,9 @@ async function init() {
   initSparklines();
   initCharts();
   bindControls();
+  bindWokwiPanel();
   bindSimPanel();
+  connectSSE();
   await loadCommandState();
   await fetchLatest();
   await fetchHistory();

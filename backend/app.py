@@ -2,11 +2,12 @@
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import paho.mqtt.client as mqtt
 import json
 import threading
+import queue as _queue
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import base64
@@ -60,6 +61,54 @@ def decrypt_aes(base64_str):
 # In-memory command store — reset khi Flask khởi động lại
 # None = auto (firmware tự điều khiển), True/False = override
 _commands = {"fan": None, "pump": None, "servo": None}
+
+# ── Server-Sent Events broadcast ──────────────────────────────────────────
+_sse_clients: list[_queue.Queue] = []
+_sse_lock = threading.Lock()
+
+def _sse_broadcast(payload: dict):
+    msg = json.dumps(payload)
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(msg)
+            except _queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
+
+@app.route("/api/stream")
+def sse_stream():
+    q = _queue.Queue(maxsize=30)
+    with _sse_lock:
+        _sse_clients.append(q)
+
+    def generate():
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=5)   # short timeout → fast thread cleanup on disconnect
+                    yield f"data: {msg}\n\n"
+                except _queue.Empty:
+                    yield ": heartbeat\n\n"   # keep-alive; browser EventSource ignores comments
+        except GeneratorExit:
+            pass
+        finally:
+            with _sse_lock:
+                if q in _sse_clients:
+                    _sse_clients.remove(q)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":               "no-cache",
+            "X-Accel-Buffering":           "no",
+            "Connection":                  "keep-alive",
+            "Access-Control-Allow-Origin": "*",   # explicit — streaming bypasses after_request hooks
+        },
+    )
 
 
 # ==========================
@@ -327,6 +376,23 @@ def on_mqtt_message(client, userdata, msg):
         cur.close()
         conn.close()
         print("MQTT data saved OK")
+        _sse_broadcast({
+            "temperature":     data.get("temperature", 0),
+            "humidity":        data.get("humidity", 0),
+            "soil_moisture":   data.get("soil_moisture", 0),
+            "light_level":     data.get("light_level", 0),
+            "motion_detected": data.get("motion_detected", False),
+            "fan_status":      data.get("fan_status", False),
+            "pump_status":     data.get("pump_status", False),
+            "servo_angle":     data.get("servo_angle", 90),
+            "light_status":    data.get("light_status", False),
+            "plant_health":    evaluate_plant(
+                                   data.get("temperature", 0),
+                                   data.get("soil_moisture", 0),
+                                   data.get("humidity", 0),
+                               ),
+            "created_at": str(datetime.datetime.now()),
+        })
     except Exception as e:
         print("MQTT DB ERROR:", str(e))
 

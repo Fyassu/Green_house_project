@@ -1,7 +1,23 @@
-# Claude Code
+# Claude Code & internal notes
+.claude/
 CLAUDE.md
 subject_material.md
 project_goal.md
+
+# Planning & documentation (not needed to run project)
+*.md
+!README.md
+
+# Temp / log files
+*.txt
+flask_err.txt
+flask_out.txt
+
+# Docker (optional infra — not part of core runtime)
+docker-compose.yml
+
+# Implementation notes
+implementation_plan.md
 
 # PlatformIO build output
 .pio/

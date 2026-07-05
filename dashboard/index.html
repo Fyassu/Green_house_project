@@ -34,6 +34,35 @@
     </div>
   </header>
 
+  <!-- ── Wokwi Device Panel ───────────────────── -->
+  <section class="section wokwi-panel" id="wokwi-panel">
+    <div class="wokwi-header" id="wokwi-toggle">
+      <div class="wokwi-title-group">
+        <span class="wokwi-icon">🔌</span>
+        <span class="wokwi-heading">Thiết bị mô phỏng (Wokwi)</span>
+        <span class="wokwi-sub">Chạy firmware thực — MQTT → Dashboard</span>
+      </div>
+      <div class="wokwi-controls">
+        <a class="btn-wokwi-open" href="https://wokwi.com/projects/466704710260621313" target="_blank">↗ Mở tab riêng</a>
+        <button class="btn-wokwi-toggle" id="btn-wokwi-expand">▼ Hiện</button>
+      </div>
+    </div>
+    <div class="wokwi-embed-wrap" id="wokwi-embed-wrap" hidden>
+      <div class="wokwi-note">
+        ⚠ Tắt Demo Simulation trước khi dùng Wokwi — hai nguồn dữ liệu không sync được với nhau.
+        Sau khi hiện panel, nhấn <strong>▶ Run</strong> trong khung Wokwi bên dưới.
+      </div>
+      <iframe
+        id="wokwi-iframe"
+        src="https://wokwi.com/projects/466704710260621313"
+        class="wokwi-iframe"
+        allow="serial"
+        loading="lazy"
+        title="Wokwi ESP32 Greenhouse Simulator">
+      </iframe>
+    </div>
+  </section>
+
   <!-- ── Demo Simulation Panel ────────────────── -->
   <section class="section demo-panel" id="demo-panel">
     <div class="demo-row demo-top-row">
@@ -77,6 +106,12 @@
         <input type="range" class="demo-slider" id="sim-light" min="0"  max="100" value="80" step="1">
         <span class="demo-val" id="sim-light-val">80%</span>
       </div>
+    </div>
+
+    <div class="demo-row demo-motion-row">
+      <span class="demo-preset-label">Chuyển động:</span>
+      <button class="btn-sim btn-motion" id="btn-sim-motion" disabled>👁 Kích hoạt PIR</button>
+      <span class="demo-motion-status" id="demo-motion-status">Đèn bật khi ánh sáng &lt; 25%</span>
     </div>
   </section>
 
