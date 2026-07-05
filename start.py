@@ -1,17 +1,20 @@
 import os
-import re
 import sys
 import json
 import time
 import subprocess
 import urllib.request
 
+# Fix Windows terminal encoding so Vietnamese/Unicode print() calls don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
-SKETCH_PATH  = os.path.join(PROJECT_DIR, "src", "sketch.ino")
 BACKEND_DIR  = os.path.join(PROJECT_DIR, "backend")
 VENV_PYTHON  = os.path.join(BACKEND_DIR, "greenhouse_wokwi", "Scripts", "python.exe")
 FLASK_PORT   = 5000
-NGROK_API    = "http://localhost:4040/api/tunnels"
 
 # ─────────────────────────────────────────────
 def step(n, total, msg):
@@ -26,7 +29,7 @@ def fail(msg):
 
 # ─────────────────────────────────────────────
 def start_flask(python_exe=VENV_PYTHON):
-    step(1, 4, "Starting Flask backend...")
+    step(1, 2, "Starting Flask backend...")
     proc = subprocess.Popen(
         [python_exe, "app.py"],
         cwd=BACKEND_DIR,
@@ -51,89 +54,33 @@ def start_flask(python_exe=VENV_PYTHON):
     fail("Flask did not respond on /api/test after 8s — check MySQL is running")
 
 # ─────────────────────────────────────────────
-def start_ngrok():
-    step(2, 4, "Starting ngrok tunnel...")
+def start_dashboard():
+    step(2, 2, "Starting Dashboard (localhost:3000)...")
     proc = subprocess.Popen(
-        ["ngrok", "http", str(FLASK_PORT)],
+        [sys.executable, "-m", "http.server", "3000"],
+        cwd=os.path.join(PROJECT_DIR, "dashboard"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    ok("Dashboard running  →  http://localhost:3000")
     return proc
 
 # ─────────────────────────────────────────────
-def get_ngrok_url(timeout=30):
-    step(3, 4, "Waiting for ngrok URL...")
-    for _ in range(timeout):
-        try:
-            with urllib.request.urlopen(NGROK_API, timeout=2) as r:
-                data = json.load(r)
-                for tunnel in data.get("tunnels", []):
-                    if tunnel.get("proto") == "https":
-                        return tunnel["public_url"]
-        except Exception:
-            pass
-        time.sleep(1)
-    return None
-
-# ─────────────────────────────────────────────
-def update_sketch(ngrok_url):
-    base = ngrok_url.rstrip("/")
-    with open(SKETCH_PATH, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    # New style: const char* NGROK_BASE = "https://..."
-    updated = re.sub(
-        r'(const char\*\s+NGROK_BASE\s*=\s*)"https://[^"]+"',
-        rf'\1"{base}"',
-        content,
-    )
-
-    # Legacy fallback: inline URL in http.begin()
-    if updated == content:
-        updated = re.sub(
-            r'"https://[^"]+/api/sensor-data"',
-            f'"{base}/api/sensor-data"',
-            content,
-        )
-
-    if updated == content:
-        print(f"      URL already up-to-date")
-        return False
-
-    with open(SKETCH_PATH, "w", encoding="utf-8") as f:
-        f.write(updated)
-    print(f"      sketch.ino  →  {base}")
-    return True
-
-# ─────────────────────────────────────────────
-def build_firmware(url_changed):
-    step(4, 4, "Building firmware with PlatformIO...")
-    if not url_changed:
-        ok("URL unchanged — skipping rebuild")
-        return
-
-    result = subprocess.run(["pio", "run"], cwd=PROJECT_DIR)
-    if result.returncode != 0:
-        fail("PlatformIO build failed — run 'pio run' manually to see errors")
-    ok("Firmware built  →  .pio/build/esp32dev/firmware.bin")
-
-# ─────────────────────────────────────────────
-def print_summary(ngrok_url):
+def print_summary():
     print("══════════════════════════════════════════")
     print(f"  Flask      →  http://localhost:{FLASK_PORT}")
-    print(f"  ngrok      →  {ngrok_url}")
-    print(f"  Dashboard  →  open dashboard/index.html in browser")
+    print(f"  Dashboard  →  http://localhost:3000")
     print("══════════════════════════════════════════")
     print("  Firmware ready — start Wokwi in VS Code")
     print("  (F1 → \"Wokwi: Start Simulator\")")
     print("══════════════════════════════════════════")
-    print("  Ctrl+C to stop Flask + ngrok\n")
+    print("  Ctrl+C to stop Flask + Dashboard\n")
 
 # ─────────────────────────────────────────────
 def main():
-    print("\n╔══════════════════════════════════════════╗")
-    print("║       Greenhouse Project Launcher        ║")
-    print("╚══════════════════════════════════════════╝\n")
+    print("\n------------------------------------------")
+    print("       Greenhouse Project Launcher        ")
+    print("------------------------------------------\n")
 
     if not os.path.exists(VENV_PYTHON):
         fail(
@@ -148,21 +95,10 @@ def main():
 
     print(f"      Using venv: {VENV_PYTHON}\n")
 
-    flask_proc = start_flask(VENV_PYTHON)
-    ngrok_proc = start_ngrok()
+    flask_proc     = start_flask(VENV_PYTHON)
+    dashboard_proc = start_dashboard()
 
-    ngrok_url = get_ngrok_url()
-    if not ngrok_url:
-        flask_proc.terminate()
-        ngrok_proc.terminate()
-        fail("ngrok URL not found — is ngrok installed? Run: winget install ngrok")
-
-    ok(ngrok_url)
-
-    url_changed = update_sketch(ngrok_url)
-    build_firmware(url_changed)
-
-    print_summary(ngrok_url)
+    print_summary()
 
     try:
         flask_proc.wait()
@@ -170,7 +106,7 @@ def main():
         print("\nShutting down...")
     finally:
         flask_proc.terminate()
-        ngrok_proc.terminate()
+        dashboard_proc.terminate()
         print("✓ All processes stopped")
 
 if __name__ == "__main__":

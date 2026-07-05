@@ -5,9 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Greenhouse Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+  <!-- Loader overlay — ẩn sau khi xác thực xong -->
+  <div class="loader-overlay" id="loader-overlay">
+    <div class="loader-spinner"></div>
+  </div>
 
   <header>
     <div class="header-left">
@@ -18,8 +24,61 @@
       <span class="status-dot" id="status-dot">●</span>
       <span class="status-label" id="status-label">Đang kết nối...</span>
       <span class="last-update" id="last-update"></span>
+      <div class="user-info" id="user-info" style="display:none">
+        <i class="fa fa-user"></i>
+        <span id="username-display"></span>
+        <button class="logout-btn" id="logout-btn">
+          <i class="fa fa-right-from-bracket"></i> Đăng xuất
+        </button>
+      </div>
     </div>
   </header>
+
+  <!-- ── Demo Simulation Panel ────────────────── -->
+  <section class="section demo-panel" id="demo-panel">
+    <div class="demo-row demo-top-row">
+      <div class="demo-title-group">
+        <span class="demo-icon">🎬</span>
+        <span class="demo-heading">Kịch bản mô phỏng</span>
+        <span class="demo-sub">Chạy độc lập — không cần Wokwi</span>
+      </div>
+      <div class="demo-btn-group">
+        <button class="btn-sim btn-sim-go"   id="btn-sim-start">▶ Bắt đầu</button>
+        <button class="btn-sim btn-sim-stop" id="btn-sim-stop" disabled>■ Dừng</button>
+      </div>
+    </div>
+
+    <div class="demo-row demo-presets-row">
+      <span class="demo-preset-label">Kịch bản:</span>
+      <button class="btn-preset" data-preset="hot">🌡 Nóng khô (38°C)</button>
+      <button class="btn-preset" data-preset="cold">❄ Lạnh ẩm (12°C)</button>
+      <button class="btn-preset" data-preset="dry">🏜 Khô hạn (đất 20%)</button>
+      <button class="btn-preset" data-preset="ideal">✅ Lý tưởng</button>
+    </div>
+
+    <div class="demo-sliders">
+      <div class="demo-slider-row">
+        <label class="demo-slider-label">🌡 Nhiệt độ</label>
+        <input type="range" class="demo-slider" id="sim-temp"  min="5"  max="60"  value="35" step="0.5">
+        <span class="demo-val" id="sim-temp-val">35.0°C</span>
+      </div>
+      <div class="demo-slider-row">
+        <label class="demo-slider-label">💧 Độ ẩm KK</label>
+        <input type="range" class="demo-slider" id="sim-hum"   min="0"  max="100" value="60" step="1">
+        <span class="demo-val" id="sim-hum-val">60%</span>
+      </div>
+      <div class="demo-slider-row">
+        <label class="demo-slider-label">🌱 Độ ẩm đất</label>
+        <input type="range" class="demo-slider" id="sim-soil"  min="0"  max="100" value="30" step="1">
+        <span class="demo-val" id="sim-soil-val">30%</span>
+      </div>
+      <div class="demo-slider-row">
+        <label class="demo-slider-label">☀ Ánh sáng</label>
+        <input type="range" class="demo-slider" id="sim-light" min="0"  max="100" value="80" step="1">
+        <span class="demo-val" id="sim-light-val">80%</span>
+      </div>
+    </div>
+  </section>
 
   <!-- ── Sensor Cards ─────────────────────────── -->
   <section class="section">
@@ -28,25 +87,29 @@
         <div class="card-icon">🌡</div>
         <div class="card-label">Nhiệt độ</div>
         <div class="card-value" id="val-temp">--</div>
-        <div class="card-unit">°C</div>
+        <div class="card-unit">°C &nbsp;<span class="trend-arrow" id="trend-temp"></span></div>
+        <div class="sparkline-wrap"><canvas class="sparkline" id="spark-temp"></canvas></div>
       </div>
       <div class="card" id="card-hum">
         <div class="card-icon">💧</div>
         <div class="card-label">Độ ẩm</div>
         <div class="card-value" id="val-hum">--</div>
-        <div class="card-unit">%</div>
+        <div class="card-unit">% &nbsp;<span class="trend-arrow" id="trend-hum"></span></div>
+        <div class="sparkline-wrap"><canvas class="sparkline" id="spark-hum"></canvas></div>
       </div>
       <div class="card" id="card-soil">
         <div class="card-icon">🌱</div>
         <div class="card-label">Độ ẩm đất</div>
         <div class="card-value" id="val-soil">--</div>
-        <div class="card-unit">%</div>
+        <div class="card-unit">% &nbsp;<span class="trend-arrow" id="trend-soil"></span></div>
+        <div class="sparkline-wrap"><canvas class="sparkline" id="spark-soil"></canvas></div>
       </div>
       <div class="card" id="card-light">
         <div class="card-icon">☀</div>
         <div class="card-label">Ánh sáng</div>
         <div class="card-value" id="val-light">--</div>
-        <div class="card-unit">%</div>
+        <div class="card-unit">% &nbsp;<span class="trend-arrow" id="trend-light"></span></div>
+        <div class="sparkline-wrap"><canvas class="sparkline" id="spark-light"></canvas></div>
       </div>
     </div>
   </section>
@@ -133,8 +196,12 @@
   <!-- ── History Charts ────────────────────────── -->
   <section class="section">
     <div class="chart-wrap">
-      <div class="chart-title">Nhiệt độ & Độ ẩm không khí</div>
-      <div class="chart-box"><canvas id="chart-env"></canvas></div>
+      <div class="chart-title">Nhiệt độ</div>
+      <div class="chart-box"><canvas id="chart-temp"></canvas></div>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">Độ ẩm không khí</div>
+      <div class="chart-box"><canvas id="chart-hum"></canvas></div>
     </div>
     <div class="chart-wrap">
       <div class="chart-title">Độ ẩm đất & Ánh sáng</div>
@@ -142,6 +209,7 @@
     </div>
   </section>
 
+  <script src="model.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

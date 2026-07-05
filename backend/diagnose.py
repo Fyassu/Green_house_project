@@ -4,22 +4,19 @@ Pipeline diagnostic: tests each link in the chain independently.
   [A] Flask reachable?          → GET  localhost:5000/api/test
   [B] Flask can write to MySQL? → POST localhost:5000/api/sensor-data  (mock data)
   [C] Row actually in MySQL?    → SELECT sensor_data WHERE id = <new id>
-  [D] ngrok URL valid?          → reads src/sketch.ino, pings the URL
-  [E] ngrok → Flask → MySQL?    → POST <ngrok-url>/api/sensor-data (mock data)
+  [D] MQTT broker reachable?    → TCP connect to broker.hivemq.com:1883
 
 Run from the backend/ folder:
     greenhouse_wokwi\\Scripts\\python.exe diagnose.py
 """
 
 import json
-import os
-import re
+import socket
 import sys
 import urllib.request
 import urllib.error
 
-FLASK_LOCAL  = "http://localhost:5000"
-SKETCH_PATH  = os.path.join(os.path.dirname(__file__), "..", "src", "sketch.ino")
+FLASK_LOCAL = "http://localhost:5000"
 
 MOCK_PAYLOAD = json.dumps({
     "temperature":    25.0,
@@ -54,10 +51,7 @@ def post(url, timeout=10):
     req = urllib.request.Request(
         url,
         data=MOCK_PAYLOAD,
-        headers={
-            "Content-Type": "application/json",
-            "ngrok-skip-browser-warning": "true",
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
@@ -125,68 +119,17 @@ def check_flask_insert():
         return False
 
 # ─────────────────────────────────────────────────────────
-def read_ngrok_url_from_sketch():
+def check_mqtt_broker():
+    title("D  MQTT Broker reachable (broker.hivemq.com:1883) ?")
     try:
-        with open(SKETCH_PATH, encoding="utf-8") as f:
-            content = f.read()
-        m = re.search(r'"(https://[^"]+)/api/sensor-data"', content)
-        return m.group(1) if m else None
-    except Exception:
-        return None
-
-def check_ngrok(ngrok_base):
-    title("D  ngrok tunnel reachable ?")
-    info(f"URL in sketch.ino: {ngrok_base}")
-    try:
-        status, data = get(f"{ngrok_base}/api/test", timeout=8)
-        if data.get("status") == "ok":
-            passed(f"ngrok tunnel is live  —  rows: {data['rows']}")
-            return True
-        else:
-            failed(f"Tunnel reached Flask but DB error: {data.get('detail')}")
-            return False
-    except urllib.error.HTTPError as e:
-        failed(f"HTTP {e.code} from ngrok — tunnel may be expired or wrong URL")
-        info("→ Restart ngrok and run start.py again to update sketch.ino URL")
-        return False
-    except urllib.error.URLError as e:
-        failed(f"Cannot reach ngrok URL: {e.reason}")
-        info("→ Is ngrok running? Check with: ngrok http 5000")
-        return False
-    except Exception as e:
-        failed(str(e))
-        return False
-
-# ─────────────────────────────────────────────────────────
-def check_ngrok_insert(ngrok_base):
-    title("E  ngrok → Flask → MySQL (full path Wokwi uses) ?")
-    try:
-        _, before = get(f"{FLASK_LOCAL}/api/test")
-        rows_before = before.get("rows", 0)
-
-        status, resp = post(f"{ngrok_base}/api/sensor-data", timeout=15)
-        info(f"POST status  : {status}")
-        info(f"POST response: {resp}")
-
-        if status != 200 or resp.get("message") != "saved":
-            failed(f"ngrok insert failed: {resp}")
-            return False
-
-        _, after = get(f"{FLASK_LOCAL}/api/test")
-        rows_after = after.get("rows", 0)
-
-        if rows_after > rows_before:
-            passed(f"Full path works  ({rows_before} → {rows_after} rows)")
-            info("→ Wokwi should be sending data successfully")
-            info("   If Wokwi still doesn't send: check Serial monitor in Wokwi")
-            info("   for the HTTP Response code after 'HTTP Response:'")
-            return True
-        else:
-            failed("ngrok POST returned 200 but no new row in MySQL")
-            return False
-
-    except Exception as e:
-        failed(str(e))
+        sock = socket.create_connection(("broker.hivemq.com", 1883), timeout=8)
+        sock.close()
+        passed("TCP connect to broker.hivemq.com:1883 OK")
+        info("→ ESP32 và Flask đều có thể kết nối MQTT broker")
+        return True
+    except OSError as e:
+        failed(f"Cannot reach MQTT broker: {e}")
+        info("→ Kiểm tra kết nối internet hoặc firewall chặn port 1883")
         return False
 
 # ─────────────────────────────────────────────────────────
@@ -207,19 +150,8 @@ def main():
         print("\n  ✗ Flask→MySQL broken. Fix step B/C first.\n")
         sys.exit(1)
 
-    # D — ngrok
-    ngrok_base = read_ngrok_url_from_sketch()
-    if not ngrok_base:
-        print("\n  [SKIP] D+E  Could not read ngrok URL from sketch.ino\n")
-        sys.exit(0)
-
-    ngrok_ok = check_ngrok(ngrok_base)
-    if not ngrok_ok:
-        print("\n  ✗ ngrok tunnel broken. Fix step D first.\n")
-        sys.exit(1)
-
-    # E — ngrok → Flask → MySQL (same path Wokwi uses)
-    check_ngrok_insert(ngrok_base)
+    # D — MQTT broker
+    check_mqtt_broker()
 
     print(f"\n{'═'*56}\n")
 
