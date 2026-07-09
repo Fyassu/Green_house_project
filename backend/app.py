@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -15,7 +15,9 @@ import jwt
 import bcrypt
 import datetime
 from datetime import timezone
+import time
 from functools import wraps
+import struct
 
 from db import get_cursor, get_new_connection
 from model import evaluate_plant
@@ -23,7 +25,7 @@ from model import evaluate_plant
 app = Flask(__name__)
 CORS(app)
 
-JWT_SECRET = "MySuperSecretJWTKey123"
+JWT_SECRET = "GreenHouseProject_SecretKey_Dk9#mN2!pQ8z$vL5*bC1"
 
 def token_required(f):
     @wraps(f)
@@ -45,22 +47,62 @@ MQTT_PORT         = 1883
 MQTT_TOPIC_SENSORS  = "greenhouse/sensors/data"
 MQTT_TOPIC_COMMANDS = "greenhouse/commands/control"
 
-AES_KEY = b"MySuperSecretKey"
-AES_IV  = b"1234567890123456"
+SPECK_KEY = b"MySuperSecretKey"  # 16 bytes
+SPECK_IV  = 0x1234567890abcdef   # 64-bit integer
+
+def ROTL32(x, r):
+    return (((x << r) & 0xffffffff) | (x >> (32 - r))) & 0xffffffff
+
+def ROTR32(x, r):
+    return ((x >> r) | ((x << (32 - r)) & 0xffffffff)) & 0xffffffff
+
+def speck_encrypt_block(pt, rk):
+    y, x = pt
+    for i in range(27):
+        x = ((ROTR32(x, 8) + y) & 0xffffffff) ^ rk[i]
+        y = ROTL32(y, 3) ^ x
+    return y, x
+
+def speck_key_schedule(key_bytes):
+    k = list(struct.unpack("<4I", key_bytes))
+    rk = [0] * 27
+    rk[0] = k[0]
+    l = [k[1], k[2], k[3]]
+    for i in range(26):
+        l_new = ((ROTR32(l[i], 8) + rk[i]) & 0xffffffff) ^ i
+        l.append(l_new)
+        rk[i+1] = ROTL32(rk[i], 3) ^ l_new
+    return rk
+
+def speck_ctr_encrypt(data_bytes, key_bytes, iv_int):
+    rk = speck_key_schedule(key_bytes)
+    out = bytearray()
+    num_blocks = (len(data_bytes) + 7) // 8
+    for j in range(num_blocks):
+        counter = (iv_int + j) & 0xffffffffffffffff
+        y = counter & 0xffffffff
+        x = (counter >> 32) & 0xffffffff
+        cy, cx = speck_encrypt_block((y, x), rk)
+        keystream = struct.pack("<2I", cy, cx)
+        start = j * 8
+        end = min(start + 8, len(data_bytes))
+        for idx in range(start, end):
+            out.append(data_bytes[idx] ^ keystream[idx - start])
+    return bytes(out)
 
 def encrypt_aes(plaintext_str):
-    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
-    ct_bytes = cipher.encrypt(pad(plaintext_str.encode("utf-8"), AES.block_size))
+    data_bytes = plaintext_str.encode("utf-8")
+    ct_bytes = speck_ctr_encrypt(data_bytes, SPECK_KEY, SPECK_IV)
     return base64.b64encode(ct_bytes).decode("utf-8")
 
 def decrypt_aes(base64_str):
-    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
-    pt_bytes = unpad(cipher.decrypt(base64.b64decode(base64_str)), AES.block_size)
+    ct_bytes = base64.b64decode(base64_str)
+    pt_bytes = speck_ctr_encrypt(ct_bytes, SPECK_KEY, SPECK_IV)
     return pt_bytes.decode("utf-8")
 
 # In-memory command store — reset khi Flask khởi động lại
 # None = auto (firmware tự điều khiển), True/False = override
-_commands = {"fan": None, "pump": None, "servo": None}
+_commands = {"fan": None, "pump": None, "servo": None, "light": None, "security": True}
 
 # ── Server-Sent Events broadcast ──────────────────────────────────────────
 _sse_clients: list[_queue.Queue] = []
@@ -246,7 +288,8 @@ def latest_data():
             "pump_status": bool(row[7]),
             "servo_angle": row[8],
             "light_status": bool(row[9]),
-            "created_at": str(row[10]),
+            "security_mode": _commands.get("security", True),
+            "created_at": str(row[10] + datetime.timedelta(hours=7)) if row[10] else None,
             "plant_health": evaluate_plant(row[1], row[3], row[2]),
         })
 
@@ -292,7 +335,7 @@ def history():
                 "pump_status": bool(row[7]),
                 "servo_angle": row[8],
                 "light_status": bool(row[9]),
-                "created_at": str(row[10]),
+                "created_at": str(row[10] + datetime.timedelta(hours=7)) if row[10] else None,
                 "plant_health": evaluate_plant(row[1], row[3], row[2]),
             })
 
@@ -322,7 +365,7 @@ def set_control():
     data = request.get_json(silent=True)
     if data is None:
         return jsonify({"error": "Invalid JSON"}), 400
-    for key in ("fan", "pump", "servo"):
+    for key in ("fan", "pump", "servo", "light", "security"):
         if key in data:
             _commands[key] = data[key]
 
@@ -346,12 +389,18 @@ def on_mqtt_connect(client, userdata, flags, reason_code, properties=None):
 
 def on_mqtt_message(client, userdata, msg):
     try:
-        encrypted_text = msg.payload.decode()
-        print(f"\n[BACKEND] Nhận dữ liệu cảm biến (Subscribe):")
-        print(f" <- Encrypted: {encrypted_text}")
+        raw_text = msg.payload.decode()
 
-        data = json.loads(decrypt_aes(encrypted_text))
-        print(f" <- Decrypted: {data}")
+        # Tự động nhận diện: plain JSON hay AES encrypted
+        try:
+            data = json.loads(raw_text)
+            print(f"\n[BACKEND] Nhận dữ liệu (Plain JSON):")
+            print(f" <- {data}")
+        except (json.JSONDecodeError, ValueError):
+            print(f"\n[BACKEND] Nhận dữ liệu cảm biến (Subscribe):")
+            print(f" <- Encrypted: {raw_text}")
+            data = json.loads(decrypt_aes(raw_text))
+            print(f" <- Decrypted: {data}")
 
         sql = """
         INSERT INTO sensor_data(
@@ -376,6 +425,12 @@ def on_mqtt_message(client, userdata, msg):
         cur.close()
         conn.close()
         print("MQTT data saved OK")
+
+        # Tự động gửi lại cấu hình lệnh điều khiển hiện tại cho ESP32 để đồng bộ (đặc biệt khi ESP32 restart)
+        payload_json = json.dumps(_commands)
+        encrypted    = encrypt_aes(payload_json)
+        client.publish(MQTT_TOPIC_COMMANDS, encrypted)
+
         _sse_broadcast({
             "temperature":     data.get("temperature", 0),
             "humidity":        data.get("humidity", 0),
@@ -386,6 +441,7 @@ def on_mqtt_message(client, userdata, msg):
             "pump_status":     data.get("pump_status", False),
             "servo_angle":     data.get("servo_angle", 90),
             "light_status":    data.get("light_status", False),
+            "security_mode":   _commands.get("security", True),
             "plant_health":    evaluate_plant(
                                    data.get("temperature", 0),
                                    data.get("soil_moisture", 0),
@@ -401,8 +457,13 @@ mqtt_client.on_connect = on_mqtt_connect
 mqtt_client.on_message = on_mqtt_message
 
 def start_mqtt():
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    mqtt_client.loop_forever()
+    while True:
+        try:
+            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            mqtt_client.loop_forever()
+        except Exception as e:
+            print(f"MQTT Connect Error: {e}. Retrying in 5s...")
+            time.sleep(5)
 
 
 # ==========================

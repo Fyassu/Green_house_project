@@ -73,264 +73,6 @@ Chart.defaults.borderColor = "#30363d";
 Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
 Chart.defaults.font.size   = 11;
 
-// ─── Demo Simulation Engine ───────────────────────
-let simState    = null;   // null = real-data mode; object = simulation active
-let simInterval = null;
-let simHistory  = [];
-
-const SIM_PRESETS = {
-  hot:   { temp: 38,   hum: 35, soil: 25, light: 90 },  // fan + roof open + pump
-  cold:  { temp: 12,   hum: 80, soil: 70, light: 20 },  // cold damp, roof closed
-  dry:   { temp: 28,   hum: 40, soil: 20, light: 60 },  // pump activates
-  ideal: { temp: 25,   hum: 60, soil: 55, light: 50 },  // all green
-};
-
-function simTick() {
-  if (!simState) return;
-  const s = simState;
-
-  // 1. Natural drift — mirrors ENV_DRIFT in model.js
-  s.temp  += ENV_DRIFT.temp;
-  s.hum   += ENV_DRIFT.hum;
-  s.soil  += ENV_DRIFT.soil;
-
-  // 2. Actuator control — manual override (fanCmd/pumpCmd/roofCmd) beats auto-logic
-  if (s.fanCmd !== null) {
-    s.fan = s.fanCmd;
-  } else {
-    if (!s.fan  && s.temp > ACTUATOR_RULES.fan.onAbove)   s.fan  = true;
-    if ( s.fan  && s.temp < ACTUATOR_RULES.fan.offBelow)  s.fan  = false;
-  }
-  if (s.pumpCmd !== null) {
-    s.pump = s.pumpCmd;
-  } else {
-    if (!s.pump && s.soil < ACTUATOR_RULES.pump.onBelow)  s.pump = true;
-    if ( s.pump && s.soil > ACTUATOR_RULES.pump.offAbove) s.pump = false;
-  }
-  if (s.roofCmd !== null) {
-    s.roof = s.roofCmd;
-  } else {
-    const hr = new Date().getHours();
-    if (s.temp > ACTUATOR_RULES.roof.fullOpenAbove) {
-      s.roof = 0;
-    } else if (hr >= ACTUATOR_RULES.roof.halfOpenHourStart &&
-               hr <= ACTUATOR_RULES.roof.halfOpenHourEnd   &&
-               s.light > ACTUATOR_RULES.roof.halfOpenLightMin) {
-      s.roof = 45;
-    } else {
-      s.roof = 90;
-    }
-  }
-
-  // 3. Actuator effects — mirrors ACTUATOR_EFFECTS in model.js
-  if (s.fan) {
-    s.temp = applyEffect(s.temp, ACTUATOR_EFFECTS.fan.temp);
-    s.hum  = applyEffect(s.hum,  ACTUATOR_EFFECTS.fan.hum);
-  }
-  if (s.pump) {
-    s.soil = applyEffect(s.soil, ACTUATOR_EFFECTS.pump.soil);
-    s.hum  = applyEffect(s.hum,  ACTUATOR_EFFECTS.pump.hum);
-  }
-  const rk = roofEffectKey(s.roof);
-  const re = ACTUATOR_EFFECTS.roof[rk];
-  if (re.temp)  s.temp  = applyEffect(s.temp,  re.temp);
-  if (re.hum)   s.hum   = applyEffect(s.hum,   re.hum);
-  if (re.light) s.light = applyEffect(s.light, re.light);
-
-  // 4. Clamp to physical bounds
-  s.temp  = clampEnv("temp",  s.temp);
-  s.hum   = clampEnv("hum",   s.hum);
-  s.soil  = clampEnv("soil",  s.soil);
-  s.light = clampEnv("light", s.light);
-
-  // 4b. Continuous motion — light tracks current brightness in real time
-  if (s.motionActive) {
-    s.motion  = true;
-    s.lightOn = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
-    _simMotionUpdateUI();  // sync button text if light slider changed
-  }
-
-  // 5. Build display record
-  const d = {
-    temperature:     parseFloat(s.temp.toFixed(1)),
-    humidity:        parseFloat(s.hum.toFixed(1)),
-    soil_moisture:   Math.round(s.soil),
-    light_level:     Math.round(s.light),
-    fan_status:      s.fan,
-    pump_status:     s.pump,
-    servo_angle:     s.roof,
-    light_status:    s.lightOn,
-    motion_detected: s.motion,
-    created_at:      new Date().toISOString(),
-    plant_health:    evaluatePlant(s.temp, s.soil, s.hum),
-  };
-
-  // 6. Push to all dashboard components
-  setStatus("sim", "DEMO");
-  setLastUpdate(d.created_at);
-  updateCards(d);
-  updatePlantHealth(d);
-  updateActuators(d);
-
-  // 7. Accumulate chart history
-  simHistory.push(d);
-  if (simHistory.length > 100) simHistory.shift();
-  if (simHistory.length > 1)   updateCharts(simHistory);
-}
-
-function startSim() {
-  const temp  = parseFloat(document.getElementById("sim-temp").value);
-  const hum   = parseFloat(document.getElementById("sim-hum").value);
-  const soil  = parseFloat(document.getElementById("sim-soil").value);
-  const light = parseFloat(document.getElementById("sim-light").value);
-
-  simState   = { temp, hum, soil, light, fan: false, pump: false, roof: 90,
-                 fanCmd: null, pumpCmd: null, roofCmd: null,
-                 motion: false, motionActive: false, lightOn: false, motionTimer: null };
-  document.getElementById("btn-sim-motion").disabled = false;
-  simHistory = [];
-
-  document.getElementById("btn-sim-start").disabled = true;
-  document.getElementById("btn-sim-stop").disabled  = false;
-  document.getElementById("btn-sim-start").classList.add("running");
-  document.getElementById("demo-panel").classList.add("running");
-
-  if (simInterval) clearInterval(simInterval);
-  simInterval = setInterval(simTick, LATEST_INTERVAL);
-  simTick();
-}
-
-function stopSim() {
-  simState = null;
-  if (simInterval) { clearInterval(simInterval); simInterval = null; }
-  simHistory = [];
-
-  if (simState && simState.motionTimer) clearTimeout(simState.motionTimer);
-  document.getElementById("btn-sim-start").disabled  = false;
-  document.getElementById("btn-sim-stop").disabled   = true;
-  document.getElementById("btn-sim-motion").disabled = true;
-  document.getElementById("btn-sim-start").classList.remove("running");
-  document.getElementById("demo-panel").classList.remove("running");
-  document.querySelectorAll(".btn-preset").forEach(b => b.classList.remove("active"));
-  _simMotionReset();
-
-  setStatus("live", "LIVE");
-  connectSSE();
-  fetchLatest();
-  fetchHistory();
-}
-
-function bindWokwiPanel() {
-  const wrap   = document.getElementById("wokwi-embed-wrap");
-  const btn    = document.getElementById("btn-wokwi-expand");
-  const toggle = document.getElementById("wokwi-toggle");
-
-  function setOpen(open) {
-    wrap.hidden = !open;
-    btn.textContent = open ? "▲ Ẩn" : "▼ Hiện";
-    btn.classList.toggle("open", open);
-  }
-
-  toggle.addEventListener("click", (e) => {
-    if (e.target.closest("a")) return;   // "Mở tab riêng" — don't toggle
-    setOpen(wrap.hidden);
-  });
-}
-
-function _simMotionReset() {
-  const btn = document.getElementById("btn-sim-motion");
-  const st  = document.getElementById("demo-motion-status");
-  btn.classList.remove("triggered");
-  btn.textContent    = "👁 Bật chuyển động";
-  st.textContent     = "Đèn bật khi ánh sáng < 25%";
-  st.classList.remove("active");
-}
-
-function _simMotionUpdateUI() {
-  if (!simState) return;
-  const s   = simState;
-  const btn = document.getElementById("btn-sim-motion");
-  const st  = document.getElementById("demo-motion-status");
-
-  if (s.motionActive) {
-    const dark = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
-    btn.classList.add("triggered");
-    btn.textContent = "🚫 Tắt chuyển động";
-    st.classList.add("active");
-    st.textContent  = dark
-      ? `Đèn SÁNG — ánh sáng ${Math.round(s.light)}% < 25%`
-      : `Chuyển động bật — ánh sáng ${Math.round(s.light)}% ≥ 25%, đèn không kích hoạt`;
-  } else {
-    _simMotionReset();
-  }
-}
-
-function toggleMotion() {
-  if (!simState) return;
-  const s = simState;
-
-  if (s.motionActive) {
-    // Tắt chuyển động — bắt đầu đếm ngược tắt đèn
-    s.motionActive = false;
-    s.motion       = false;
-    if (s.motionTimer) clearTimeout(s.motionTimer);
-    if (s.lightOn) {
-      s.motionTimer = setTimeout(() => {
-        if (simState === s) { s.lightOn = false; s.motionTimer = null; _simMotionReset(); }
-      }, ACTUATOR_RULES.motionLight.durationMs);
-      const st = document.getElementById("demo-motion-status");
-      st.textContent = `Đèn tắt sau ${(ACTUATOR_RULES.motionLight.durationMs / 1000).toFixed(1)}s...`;
-      st.classList.add("active");
-      document.getElementById("btn-sim-motion").classList.remove("triggered");
-      document.getElementById("btn-sim-motion").textContent = "👁 Bật chuyển động";
-    } else {
-      _simMotionReset();
-    }
-  } else {
-    // Bật chuyển động liên tục
-    if (s.motionTimer) { clearTimeout(s.motionTimer); s.motionTimer = null; }
-    s.motionActive = true;
-    s.motion       = true;
-    s.lightOn      = s.light < ACTUATOR_RULES.motionLight.triggerBelowLight;
-    _simMotionUpdateUI();
-  }
-}
-
-function bindSimPanel() {
-  document.getElementById("btn-sim-start").addEventListener("click", startSim);
-  document.getElementById("btn-sim-stop").addEventListener("click",  stopSim);
-  document.getElementById("btn-sim-motion").addEventListener("click", toggleMotion);
-
-  // Slider → live value display
-  [["sim-temp",  "sim-temp-val",  v => parseFloat(v).toFixed(1) + "°C"],
-   ["sim-hum",   "sim-hum-val",   v => Math.round(v) + "%"],
-   ["sim-soil",  "sim-soil-val",  v => Math.round(v) + "%"],
-   ["sim-light", "sim-light-val", v => Math.round(v) + "%"]].forEach(([id, valId, fmt]) => {
-    document.getElementById(id).addEventListener("input", function() {
-      document.getElementById(valId).textContent = fmt(this.value);
-    });
-  });
-
-  // Preset buttons → fill sliders + auto-start
-  document.querySelectorAll(".btn-preset").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const p = SIM_PRESETS[btn.dataset.preset];
-      if (!p) return;
-      document.getElementById("sim-temp").value         = p.temp;
-      document.getElementById("sim-hum").value          = p.hum;
-      document.getElementById("sim-soil").value         = p.soil;
-      document.getElementById("sim-light").value        = p.light;
-      document.getElementById("sim-temp-val").textContent  = p.temp.toFixed(1) + "°C";
-      document.getElementById("sim-hum-val").textContent   = p.hum + "%";
-      document.getElementById("sim-soil-val").textContent  = p.soil + "%";
-      document.getElementById("sim-light-val").textContent = p.light + "%";
-      document.querySelectorAll(".btn-preset").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      startSim();
-    });
-  });
-}
-
 // ─── Status bar ───────────────────────────────────
 function setStatus(state, msg) {
   document.getElementById("status-dot").className    = "status-dot " + state;
@@ -431,18 +173,38 @@ function setBadge(id, on, label) {
   el.className   = "actuator-badge " + (on ? "on" : "off");
 }
 
-function updateActuators(d) {
-  setBadge("act-fan",   d.fan_status);
-  setBadge("act-pump",  d.pump_status);
-  setBadge("act-light", d.light_status);
+window.pendingCmds = { fan: 0, pump: 0, servo: 0, light: 0, security: 0 };
 
-  const roofEl = document.getElementById("act-roof");
-  roofEl.textContent = d.servo_angle + "°";
-  roofEl.className   = "actuator-badge " + (d.servo_angle < 90 ? "on" : "off");
+function updateActuators(d) {
+  const now = Date.now();
+  if (now - pendingCmds.fan > 25000)   setBadge("act-fan",   d.fan_status);
+  if (now - pendingCmds.pump > 25000)  setBadge("act-pump",  d.pump_status);
+  if (now - pendingCmds.light > 25000) setBadge("act-light", d.light_status);
+
+  if (now - pendingCmds.servo > 25000) {
+    const roofEl = document.getElementById("act-roof");
+    if (roofEl) {
+      roofEl.textContent = d.servo_angle + "°";
+      roofEl.className   = "actuator-badge " + (d.servo_angle < 90 ? "on" : "off");
+    }
+  }
 
   const motionEl = document.getElementById("act-motion");
-  motionEl.textContent = d.motion_detected ? "YES" : "no";
-  motionEl.className   = d.motion_detected ? "actuator-badge alert" : "actuator-badge off";
+  if (motionEl) {
+    motionEl.textContent = d.motion_detected ? "YES" : "no";
+    motionEl.className   = d.motion_detected ? "actuator-badge alert" : "actuator-badge off";
+  }
+
+  const secEl = document.getElementById("act-security");
+  if (secEl && now - pendingCmds.security > 25000) {
+    if (d.security_mode && d.motion_detected) {
+      secEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation fa-beat"></i> BÁO ĐỘNG';
+      secEl.className = "actuator-badge alert";
+    } else {
+      secEl.textContent = d.security_mode ? "ON" : "OFF";
+      secEl.className   = "actuator-badge " + (d.security_mode ? "on" : "off");
+    }
+  }
 }
 
 // ─── Server-Sent Events (real-time Wokwi sync) ────
@@ -484,7 +246,6 @@ function connectSSE() {
   sseSource.onopen = () => { sseActive = true; };
 
   sseSource.onmessage = (e) => {
-    if (simState) return;
     let d;
     try { d = JSON.parse(e.data); } catch { return; }
     if (!d || d.temperature == null) return;
@@ -495,6 +256,7 @@ function connectSSE() {
     updatePlantHealth(d);
     updateActuators(d);
     appendToCharts(d);
+    if (typeof window.update3DTwin === "function") window.update3DTwin(d);
   };
 
   sseSource.onerror = () => {
@@ -507,7 +269,6 @@ function connectSSE() {
 
 // ─── Fetch latest ─────────────────────────────────
 async function fetchLatest() {
-  if (simState) return;   // simulation owns the display
   try {
     const res = await fetch(API + "/api/latest", { headers: getAuthHeaders() });
     if (res.status === 401) { handle401(); return; }
@@ -522,6 +283,7 @@ async function fetchLatest() {
     updateCards(d);
     updatePlantHealth(d);
     updateActuators(d);
+    if (typeof window.update3DTwin === "function") window.update3DTwin(d);
   } catch {
     setStatus("error", "Mất kết nối Flask — kiểm tra backend");
   }
@@ -678,7 +440,7 @@ function updateCharts(rows) {
 }
 
 async function fetchHistory() {
-  if (simState) return;   // simulation builds its own chart history
+  if (typeof simState !== 'undefined' && simState) return;   // simulation builds its own chart history
   try {
     const res = await fetch(API + "/api/history", { headers: getAuthHeaders() });
     if (res.status === 401) { handle401(); return; }
@@ -692,6 +454,7 @@ async function fetchHistory() {
 
 // ─── Control ──────────────────────────────────────
 async function sendCommand(device, value) {
+  pendingCmds[device] = Date.now(); // Khóa UI không cho update từ DB trong 3s để chờ Wokwi phản hồi
   try {
     const res = await fetch(API + "/api/control", {
       method:  "POST",
@@ -703,7 +466,7 @@ async function sendCommand(device, value) {
     // silent
   }
   // Apply override to simulation engine so it takes effect immediately
-  if (simState) {
+  if (typeof simState !== 'undefined' && simState) {
     if      (device === "fan")   simState.fanCmd  = value;
     else if (device === "pump")  simState.pumpCmd = value;
     else if (device === "servo") simState.roofCmd = value;
@@ -711,15 +474,29 @@ async function sendCommand(device, value) {
 }
 
 function setActiveBtn(device, valStr) {
-  const group = document.querySelector(`.btn-group[data-device="${device}"]`);
-  if (!group) return;
-  group.querySelectorAll(".btn-ctrl").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.val === valStr);
+  const groups = document.querySelectorAll(`.btn-group[data-device="${device}"]`);
+  if (groups.length === 0) return;
+  groups.forEach(group => {
+    group.querySelectorAll(".btn-ctrl").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.val === valStr);
+    });
   });
+
+  // Đồng bộ trạng thái tức thời sang mô hình 3D
+  let value;
+  if      (valStr === "null")  value = null;
+  else if (valStr === "true")  value = true;
+  else if (valStr === "false") value = false;
+  else                         value = parseInt(valStr, 10);
+  if (typeof window.update3DTwinManual === "function") {
+    window.update3DTwinManual(device, value);
+  }
+
   // Sync actuator badge immediately so both panels stay consistent
   if (valStr === "null") return;   // AUTO — badge updates on next poll
   if (device === "fan")  { setBadge("act-fan",  valStr === "true"); return; }
   if (device === "pump") { setBadge("act-pump", valStr === "true"); return; }
+  if (device === "light") { setBadge("act-light", valStr === "true"); return; }
   if (device === "servo") {
     const angle  = parseInt(valStr, 10);
     const roofEl = document.getElementById("act-roof");
@@ -733,14 +510,92 @@ async function loadCommandState() {
   try {
     const res  = await fetch(API + "/api/commands");
     const cmds = await res.json();
-    ["fan", "pump"].forEach(dev => {
+    ["fan", "pump", "light"].forEach(dev => {
       const v = cmds[dev];
       setActiveBtn(dev, v === null ? "null" : String(v));
     });
     setActiveBtn("servo", cmds.servo === null ? "null" : String(cmds.servo));
+    setActiveBtn("security", String(cmds.security));
   } catch {
     // Flask chưa sẵn — bỏ qua
   }
+}
+
+// ─── TAB NAVIGATION ──────────────────────────────────
+function bindTabs() {
+  const tabs = document.querySelectorAll('.nav-tab');
+  const contents = document.querySelectorAll('.tab-content');
+  const loader = document.getElementById("loader-overlay");
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', async () => {
+      // Bỏ qua nếu click lại chính tab đang mở
+      if (tab.classList.contains('active')) return;
+
+      // 1. Hiển thị màn hình Loading
+      if (loader) loader.style.display = "flex";
+
+      // 2. Ẩn nội dung tab cũ
+      tabs.forEach(t => t.classList.remove('active'));
+      contents.forEach(c => c.classList.remove('active'));
+      
+      // 3. Chuẩn bị tab mới
+      tab.classList.add('active');
+      const targetId = tab.getAttribute('data-target');
+      const targetContent = document.getElementById(targetId);
+
+      // XỬ LÝ CHO TAB DASHBOARD
+      if (targetId === 'tab-dashboard') {
+        window.is3DTabActive = false;
+        if (typeof window.stop3DAnimation === 'function') {
+            window.stop3DAnimation();
+        }
+        // Đợi gọi API lấy dữ liệu và delay render
+        await Promise.all([
+            fetchLatest(), 
+            fetchHistory(),
+            new Promise(resolve => setTimeout(resolve, 500))
+        ]);
+        
+        targetContent.classList.add('active');
+        if (loader) loader.style.display = "none";
+      } 
+      
+      // XỬ LÝ CHO TAB 3D TWIN
+      else if (targetId === 'tab-3d') {
+        window.is3DTabActive = true;
+        targetContent.classList.add('active');
+        
+        // Khởi tạo 3D nếu là lần đầu
+        if (typeof init3DTwin === 'function' && !window._3dInitialized) {
+          init3DTwin();
+          window._3dInitialized = true;
+        } else if (typeof window.start3DAnimation === 'function') {
+          // Restart animation loop if it was paused
+          window.start3DAnimation();
+        }
+
+        // Kiểm tra xem đã ready chưa (dành cho các lần mở lại sau)
+        if (window.is3DReady === true) {
+          setTimeout(() => { if (loader) loader.style.display = "none"; }, 300);
+        } else {
+          // Nếu chưa, đợi biến cờ window.is3DReady được bật lên từ file 3d_twin.js
+          let attempts = 0;
+          const maxAttempts = 75; // Đợi tối đa 30 giây (tránh kẹt)
+          
+          const check3DLoad = setInterval(() => {
+            attempts++;
+            if (window.is3DReady === true || attempts >= maxAttempts) {
+              clearInterval(check3DLoad);
+              setTimeout(() => {
+                if (loader) loader.style.display = "none";
+              }, 300);
+            }
+          }, 400);
+        }
+      }
+    });
+  });
 }
 
 function bindControls() {
@@ -756,12 +611,36 @@ function bindControls() {
         else                         value = parseInt(valStr, 10);
         await sendCommand(device, value);
         setActiveBtn(device, valStr);
+        
+        // Cập nhật UI text badge tức thời cho Dashboard
+        if (device === "fan") setBadge("act-fan", value);
+        else if (device === "pump") setBadge("act-pump", value);
+        else if (device === "light") setBadge("act-light", value);
+        else if (device === "security") {
+          const secEl = document.getElementById("act-security");
+          if (secEl) {
+            secEl.textContent = value ? "ON" : "OFF";
+            secEl.className = "actuator-badge " + (value ? "on" : "off");
+          }
+        }
+        else if (device === "roof") {
+          const roofEl = document.getElementById("act-roof");
+          if (roofEl) {
+            roofEl.textContent = value !== null ? value + "°" : "--";
+            roofEl.className = "actuator-badge " + (value !== null && value < 90 ? "on" : "off");
+          }
+        }
+
+        // Cập nhật phản hồi hình ảnh/âm thanh 3D tức thời
+        if (typeof window.update3DTwinManual === "function") {
+          window.update3DTwinManual(device, value);
+        }
       });
     });
   });
 }
 
-// ─── Init ─────────────────────────────────────────
+// ─── INIT & AUTH ─────────────────────────────────────
 async function init() {
   const token    = localStorage.getItem("gh_token");
   const username = localStorage.getItem("gh_username");
@@ -783,17 +662,22 @@ async function init() {
   }
 
   const loader = document.getElementById("loader-overlay");
-  if (loader) loader.style.display = "none";
+  if (loader) loader.style.display = "flex";
 
+  bindTabs();
   initSparklines();
   initCharts();
   bindControls();
-  bindWokwiPanel();
-  bindSimPanel();
   connectSSE();
   await loadCommandState();
-  await fetchLatest();
-  await fetchHistory();
+
+  await Promise.all([
+      fetchLatest(), 
+      fetchHistory(),
+      new Promise(resolve => setTimeout(resolve, 800))
+  ]);
+  if (loader) loader.style.display = "none";
+
   setInterval(fetchLatest,  LATEST_INTERVAL);
   setInterval(fetchHistory, HISTORY_INTERVAL);
 }

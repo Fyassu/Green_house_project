@@ -4,9 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Greenhouse Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.0/umd/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 
@@ -20,100 +28,33 @@
       <span class="logo">🌿</span>
       <h1>Smart Greenhouse</h1>
     </div>
+
+    <div class="header-center nav-segment">
+      <button class="nav-tab active" data-target="tab-dashboard"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
+      <button class="nav-tab" data-target="tab-3d"><i class="fa-solid fa-cube"></i> Digital Twin</button>
+    </div>
+
     <div class="header-right">
       <span class="status-dot" id="status-dot">●</span>
       <span class="status-label" id="status-label">Đang kết nối...</span>
       <span class="last-update" id="last-update"></span>
-      <div class="user-info" id="user-info" style="display:none">
-        <i class="fa fa-user"></i>
-        <span id="username-display"></span>
-        <button class="logout-btn" id="logout-btn">
-          <i class="fa fa-right-from-bracket"></i> Đăng xuất
+      <div class="user-info" id="user-info" style="display:none; flex-direction: column; align-items: flex-start; gap: 4px;">
+        <div class="user-name-wrap" style="display:flex; align-items:center; gap:6px;">
+          <i class="fa fa-user"></i>
+          <span id="username-display" style="font-weight: 600;"></span>
+        </div>
+        <button class="logout-btn" id="logout-btn" style="background:transparent; border:1px solid var(--border); color:var(--red); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer; transition: 0.2s;">
+          <i class="fa-solid fa-sign-out-alt"></i> Đăng xuất
         </button>
       </div>
     </div>
   </header>
 
-  <!-- ── Wokwi Device Panel ───────────────────── -->
-  <section class="section wokwi-panel" id="wokwi-panel">
-    <div class="wokwi-header" id="wokwi-toggle">
-      <div class="wokwi-title-group">
-        <span class="wokwi-icon">🔌</span>
-        <span class="wokwi-heading">Thiết bị mô phỏng (Wokwi)</span>
-        <span class="wokwi-sub">Chạy firmware thực — MQTT → Dashboard</span>
-      </div>
-      <div class="wokwi-controls">
-        <a class="btn-wokwi-open" href="https://wokwi.com/projects/466704710260621313" target="_blank">↗ Mở tab riêng</a>
-        <button class="btn-wokwi-toggle" id="btn-wokwi-expand">▼ Hiện</button>
-      </div>
-    </div>
-    <div class="wokwi-embed-wrap" id="wokwi-embed-wrap" hidden>
-      <div class="wokwi-note">
-        ⚠ Tắt Demo Simulation trước khi dùng Wokwi — hai nguồn dữ liệu không sync được với nhau.
-        Sau khi hiện panel, nhấn <strong>▶ Run</strong> trong khung Wokwi bên dưới.
-      </div>
-      <iframe
-        id="wokwi-iframe"
-        src="https://wokwi.com/projects/466704710260621313"
-        class="wokwi-iframe"
-        allow="serial"
-        loading="lazy"
-        title="Wokwi ESP32 Greenhouse Simulator">
-      </iframe>
-    </div>
-  </section>
-
-  <!-- ── Demo Simulation Panel ────────────────── -->
-  <section class="section demo-panel" id="demo-panel">
-    <div class="demo-row demo-top-row">
-      <div class="demo-title-group">
-        <span class="demo-icon">🎬</span>
-        <span class="demo-heading">Kịch bản mô phỏng</span>
-        <span class="demo-sub">Chạy độc lập — không cần Wokwi</span>
-      </div>
-      <div class="demo-btn-group">
-        <button class="btn-sim btn-sim-go"   id="btn-sim-start">▶ Bắt đầu</button>
-        <button class="btn-sim btn-sim-stop" id="btn-sim-stop" disabled>■ Dừng</button>
-      </div>
-    </div>
-
-    <div class="demo-row demo-presets-row">
-      <span class="demo-preset-label">Kịch bản:</span>
-      <button class="btn-preset" data-preset="hot">🌡 Nóng khô (38°C)</button>
-      <button class="btn-preset" data-preset="cold">❄ Lạnh ẩm (12°C)</button>
-      <button class="btn-preset" data-preset="dry">🏜 Khô hạn (đất 20%)</button>
-      <button class="btn-preset" data-preset="ideal">✅ Lý tưởng</button>
-    </div>
-
-    <div class="demo-sliders">
-      <div class="demo-slider-row">
-        <label class="demo-slider-label">🌡 Nhiệt độ</label>
-        <input type="range" class="demo-slider" id="sim-temp"  min="5"  max="60"  value="35" step="0.5">
-        <span class="demo-val" id="sim-temp-val">35.0°C</span>
-      </div>
-      <div class="demo-slider-row">
-        <label class="demo-slider-label">💧 Độ ẩm KK</label>
-        <input type="range" class="demo-slider" id="sim-hum"   min="0"  max="100" value="60" step="1">
-        <span class="demo-val" id="sim-hum-val">60%</span>
-      </div>
-      <div class="demo-slider-row">
-        <label class="demo-slider-label">🌱 Độ ẩm đất</label>
-        <input type="range" class="demo-slider" id="sim-soil"  min="0"  max="100" value="30" step="1">
-        <span class="demo-val" id="sim-soil-val">30%</span>
-      </div>
-      <div class="demo-slider-row">
-        <label class="demo-slider-label">☀ Ánh sáng</label>
-        <input type="range" class="demo-slider" id="sim-light" min="0"  max="100" value="80" step="1">
-        <span class="demo-val" id="sim-light-val">80%</span>
-      </div>
-    </div>
-
-    <div class="demo-row demo-motion-row">
-      <span class="demo-preset-label">Chuyển động:</span>
-      <button class="btn-sim btn-motion" id="btn-sim-motion" disabled>👁 Kích hoạt PIR</button>
-      <span class="demo-motion-status" id="demo-motion-status">Đèn bật khi ánh sáng &lt; 25%</span>
-    </div>
-  </section>
+  <!-- ── MAIN CONTENT TABS ────────────────────── -->
+  <main class="main-content">
+    
+    <!-- TAB 1: DASHBOARD -->
+    <div id="tab-dashboard" class="tab-content active">
 
   <!-- ── Sensor Cards ─────────────────────────── -->
   <section class="section">
@@ -182,13 +123,18 @@
           </div>
           <div class="actuator-row">
             <span class="actuator-icon">💡</span>
-            <span class="actuator-name">Đèn chuyển động</span>
+            <span class="actuator-name">Đèn Led</span>
             <span class="actuator-badge" id="act-light">--</span>
           </div>
           <div class="actuator-row">
             <span class="actuator-icon">👁</span>
             <span class="actuator-name">Chuyển động</span>
             <span class="actuator-badge" id="act-motion">--</span>
+          </div>
+          <div class="actuator-row">
+            <span class="actuator-icon">🛡</span>
+            <span class="actuator-name">Chế độ bảo vệ</span>
+            <span class="actuator-badge" id="act-security">--</span>
           </div>
         </div>
       </div>
@@ -221,6 +167,21 @@
               <button class="btn-ctrl" data-val="90">Đóng 90°</button>
             </div>
           </div>
+          <div class="control-row">
+            <span class="control-label">💡 Đèn Led</span>
+            <div class="btn-group" data-device="light">
+              <button class="btn-ctrl" data-val="null">AUTO</button>
+              <button class="btn-ctrl" data-val="true">ON</button>
+              <button class="btn-ctrl" data-val="false">OFF</button>
+            </div>
+          </div>
+          <div class="control-row">
+            <span class="control-label">🛡 Bảo vệ</span>
+            <div class="btn-group" data-device="security">
+              <button class="btn-ctrl" data-val="true">ON</button>
+              <button class="btn-ctrl" data-val="false">OFF</button>
+            </div>
+          </div>
         </div>
         <p class="control-note">AUTO — firmware tự điều khiển theo ngưỡng cảm biến</p>
       </div>
@@ -244,7 +205,133 @@
     </div>
   </section>
 
+    </div> <!-- end tab-dashboard -->
+
+    <!-- TAB 2: 3D DIGITAL TWIN -->
+    <div id="tab-3d" class="tab-content">
+      <div class="twin-toolbar" style="padding: 10px 24px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);">
+        <i class="fa fa-info-circle"></i> Kéo chuột trái để xoay góc nhìn, cuộn chuột để zoom.
+      </div>
+      
+      <!-- Bảng điều khiển môi trường mô phỏng (Top-Left) -->
+      <div class="sim-env-panel" id="panel-left" style="max-height: 800px;">
+        <div class="sim-panel-header" onclick="document.getElementById('panel-left').classList.toggle('sim-panel-collapsed')">
+          <h3 class="sim-env-title" style="margin: 0;"><i class="fa-solid fa-cloud-sun"></i> Môi trường & Thời tiết</h3>
+          <i class="fa-solid fa-chevron-up collapse-icon"></i>
+        </div>
+        
+        <div class="sim-env-row" style="margin-top: 10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="sim-env-label">Thời gian: <span id="sim-time-display">12:00</span></span>
+            <button id="sim-play-btn" title="Tự động trôi thời gian" style="background:var(--surface); border:1px solid var(--border); color:var(--green); cursor:pointer; padding:2px 8px; border-radius:4px;"><i class="fa-solid fa-play"></i></button>
+          </div>
+          <input type="range" id="sim-time-slider" class="sim-slider" min="0" max="24" step="0.1" value="12">
+        </div>
+
+        <div class="sim-env-row">
+          <span class="sim-env-label">Thời tiết:</span>
+          <button class="btn-weather active" data-weather="sunny"><i class="fa-solid fa-sun"></i> Nắng</button>
+          <button class="btn-weather" data-weather="cloudy"><i class="fa-solid fa-cloud"></i> Mây</button>
+          <button class="btn-weather" data-weather="rainy"><i class="fa-solid fa-cloud-rain"></i> Mưa</button>
+        </div>
+
+        <h3 class="sim-env-title" style="margin-top: 15px;"><i class="fa-solid fa-arrows-up-down-left-right"></i> Sắp xếp Mô Hình (Edit Mode)</h3>
+        <div class="sim-env-row" style="flex-direction: column; gap: 8px;">
+          <button id="btn-edit-mode" class="btn-weather" style="width: 100%;"><i class="fa-solid fa-cube"></i> Bật Edit Mode</button>
+          <button id="btn-export-pos" class="btn-weather" style="width: 100%; display: none; background: var(--border);"><i class="fa-solid fa-print"></i> In Tọa Độ ra Console</button>
+        </div>
+      </div>
+
+      <!-- Bảng Sensor & Actuator (Top-Right) -->
+      <div class="sim-sensor-panel" id="panel-right" style="max-height: 800px;">
+        <div class="sim-panel-header" onclick="document.getElementById('panel-right').classList.toggle('sim-panel-collapsed')">
+          <h3 class="sim-env-title" style="margin: 0;"><i class="fa-solid fa-microchip"></i> Thiết bị & Điều khiển</h3>
+          <i class="fa-solid fa-chevron-up collapse-icon"></i>
+        </div>
+        
+        <h3 class="sim-env-title" style="margin-top: 10px; font-size: 12px;"><i class="fa-solid fa-list"></i> Danh sách Cảm biến (Live)</h3>
+        <table style="width: 100%; font-size: 11px; margin-bottom: 15px; border-collapse: collapse; text-align: left;">
+          <tr style="border-bottom: 1px solid var(--border);"><th style="padding-bottom:4px;">Cảm biến</th><th>Chức năng</th><th style="text-align:right;">Dữ liệu thực</th></tr>
+          <tr><td style="padding:4px 0; font-weight:bold;">DHT22</td><td>Nhiệt độ & ẩm</td><td style="text-align:right; color:var(--green);" id="sim-live-dht">--</td></tr>
+          <tr><td style="padding:4px 0; font-weight:bold;">LDR</td><td>Cường độ sáng</td><td style="text-align:right; color:var(--yellow);" id="sim-live-ldr">--</td></tr>
+          <tr><td style="padding:4px 0; font-weight:bold;">Soil</td><td>Độ ẩm đất</td><td style="text-align:right; color:#4da6ff;" id="sim-live-soil">--</td></tr>
+          <tr><td style="padding:4px 0; font-weight:bold;">PIR</td><td>Chuyển động</td><td style="text-align:right; color:var(--red);" id="sim-live-pir">--</td></tr>
+        </table>
+
+        <h3 class="sim-env-title" style="margin-top: 15px; font-size: 12px;"><i class="fa-solid fa-list-check"></i> Điều khiển Thiết bị (Live)</h3>
+        <table style="width: 100%; font-size: 11px; margin-bottom: 15px; border-collapse: collapse; text-align: left; vertical-align: middle;">
+          <tr style="border-bottom: 1px solid var(--border);">
+            <th style="padding-bottom:4px; width: 45%;">Thiết bị</th>
+            <th style="text-align:right; width: 55%;">Điều khiển</th>
+          </tr>
+          <tr style="height: 36px; border-bottom: 1px dashed rgba(255,255,255,0.05);">
+            <td style="padding:4px 0;">🌀 Quạt <span class="actuator-badge off" id="sim-live-fan" style="font-size: 9px; padding: 1px 4px; min-width: auto; margin-left: 4px;">--</span></td>
+            <td style="text-align:right; padding: 4px 0;">
+              <div class="btn-group" data-device="fan" style="display:inline-flex; gap: 2px;">
+                <button class="btn-ctrl btn-ctrl-mini" data-val="null">AUTO</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="true">ON</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="false">OFF</button>
+              </div>
+            </td>
+          </tr>
+          <tr style="height: 36px; border-bottom: 1px dashed rgba(255,255,255,0.05);">
+            <td style="padding:4px 0;">💦 Bơm <span class="actuator-badge off" id="sim-live-pump" style="font-size: 9px; padding: 1px 4px; min-width: auto; margin-left: 4px;">--</span></td>
+            <td style="text-align:right; padding: 4px 0;">
+              <div class="btn-group" data-device="pump" style="display:inline-flex; gap: 2px;">
+                <button class="btn-ctrl btn-ctrl-mini" data-val="null">AUTO</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="true">ON</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="false">OFF</button>
+              </div>
+            </td>
+          </tr>
+          <tr style="height: 36px; border-bottom: 1px dashed rgba(255,255,255,0.05);">
+            <td style="padding:4px 0;">🏠 Mái <span class="actuator-badge off" id="sim-live-roof" style="font-size: 9px; padding: 1px 4px; min-width: auto; margin-left: 4px;">--</span></td>
+            <td style="text-align:right; padding: 4px 0;">
+              <div class="btn-group" data-device="servo" style="display:inline-flex; gap: 2px;">
+                <button class="btn-ctrl btn-ctrl-mini" data-val="null">AUTO</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="0">0°</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="45">45°</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="90">90°</button>
+              </div>
+            </td>
+          </tr>
+          <tr style="height: 36px; border-bottom: 1px dashed rgba(255,255,255,0.05);">
+            <td style="padding:4px 0;">💡 Đèn <span class="actuator-badge off" id="sim-live-light" style="font-size: 9px; padding: 1px 4px; min-width: auto; margin-left: 4px;">--</span></td>
+            <td style="text-align:right; padding: 4px 0;">
+              <div class="btn-group" data-device="light" style="display:inline-flex; gap: 2px;">
+                <button class="btn-ctrl btn-ctrl-mini" data-val="null">AUTO</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="true">ON</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="false">OFF</button>
+              </div>
+            </td>
+          </tr>
+          <tr style="height: 36px;">
+            <td style="padding:4px 0;">🛡 Bảo vệ <span class="actuator-badge off" id="sim-live-security" style="font-size: 9px; padding: 1px 4px; min-width: auto; margin-left: 4px;">--</span></td>
+            <td style="text-align:right; padding: 4px 0;">
+              <div class="btn-group" data-device="security" style="display:inline-flex; gap: 2px;">
+                <button class="btn-ctrl btn-ctrl-mini" data-val="true">ON</button>
+                <button class="btn-ctrl btn-ctrl-mini" data-val="false">OFF</button>
+              </div>
+            </td>
+          </tr>
+        </table>
+
+        <div style="text-align:center; margin-top: 15px;">
+          <span style="font-size: 11px; color: var(--green); font-weight: bold;"><i class="fa-solid fa-satellite-dish"></i> Đang đồng bộ Wokwi Real-time</span>
+        </div>
+      </div>
+
+
+      <div id="three-loading" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:var(--text); font-size:16px; font-weight:600; text-align:center; z-index:10; background:rgba(22,27,34,0.8); padding:10px 20px; border-radius:8px;">
+        Đang tải mô hình 3D... <span id="three-progress">0%</span>
+      </div>
+      <div id="three-container" style="width: 100%; height: calc(100vh - 100px); overflow: hidden; position: relative;"></div>
+    </div>
+
+  </main>
+
+  <script src="3d_twin.js?v=49"></script>
   <script src="model.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

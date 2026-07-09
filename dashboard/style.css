@@ -36,11 +36,60 @@ header {
   z-index: 100;
 }
 
-.header-left { display: flex; align-items: center; gap: 10px; }
+.header-left { flex: 1; display: flex; align-items: center; gap: 10px; justify-content: flex-start; }
 .logo { font-size: 22px; }
 h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 
-.header-right { display: flex; align-items: center; gap: 10px; }
+.header-right { flex: 1; display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+
+/* ─── Navigation Tabs (Segmented Control) ───────── */
+.nav-segment {
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.nav-tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 6px 16px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-tab:hover {
+  color: var(--text);
+}
+
+.nav-tab.active {
+  background: var(--surface);
+  color: var(--blue);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+/* ─── Tab Content ───────────────────────────────── */
+.tab-content {
+  display: none;
+  animation: fadeIn 0.3s ease;
+}
+.tab-content.active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .status-dot {
   font-size: 11px;
@@ -497,3 +546,141 @@ body.login-page {
 /* Status dot — sim mode */
 .status-dot.sim { color: var(--orange); animation: blink-sim 0.9s ease-in-out infinite; }
 @keyframes blink-sim { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+/* --- SIMULATION ENVIRONMENT PANEL --- */
+#tab-3d {
+  position: relative;
+}
+
+.sim-env-panel {
+  position: absolute;
+  top: 60px; /* Below toolbar */
+  left: 20px;
+  background: rgba(22, 27, 34, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 300px;
+  z-index: 5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  color: var(--text);
+  pointer-events: auto; /* Ensure clickable */
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  overflow: hidden;
+}
+
+.sim-sensor-panel {
+  position: absolute;
+  top: 60px; /* Below toolbar */
+  right: 20px;
+  background: rgba(22, 27, 34, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 320px;
+  z-index: 5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  color: var(--text);
+  pointer-events: auto;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  overflow: hidden;
+}
+
+.sim-panel-collapsed {
+  max-height: 48px !important;
+  padding-bottom: 0 !important;
+}
+
+.sim-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.sim-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--green);
+}
+
+.sim-panel-header i.collapse-icon {
+  color: var(--muted);
+  transition: transform 0.3s ease;
+}
+
+.sim-panel-collapsed .sim-panel-header i.collapse-icon {
+  transform: rotate(180deg);
+}
+
+.sim-env-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-env-row {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sim-env-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+#sim-time-display {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sim-slider {
+  width: 100%;
+  accent-color: var(--green);
+}
+
+.sim-weather-group {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-weather {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+}
+
+.btn-weather:hover {
+  background: rgba(46, 160, 67, 0.2);
+  border-color: var(--green);
+}
+
+.btn-weather.active {
+  background: var(--green);
+  color: #fff;
+  border-color: var(--green);
+  box-shadow: 0 0 8px rgba(46, 160, 67, 0.5);
+}
+
+.btn-ctrl-mini {
+  padding: 2px 6px !important;
+  font-size: 9px !important;
+  border-radius: 4px !important;
+}
+

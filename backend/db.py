@@ -11,10 +11,17 @@ _config = {
     "autocommit": True,
 }
 
-db = mysql.connector.connect(**_config)
+from mysql.connector import pooling
+db_pool = pooling.MySQLConnectionPool(
+    pool_name="mypool",
+    pool_size=10,
+    pool_reset_session=True,
+    **_config
+)
 
 def _ensure_table():
-    cur = db.cursor()
+    conn = db_pool.get_connection()
+    cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id              INT AUTO_INCREMENT PRIMARY KEY,
@@ -58,15 +65,30 @@ def _ensure_table():
             "INSERT INTO users (username, password_hash) VALUES ('admin', %s)", (hashed,)
         )
     cur.close()
+    conn.close()
 
 _ensure_table()
 
+class ManagedCursor:
+    def __init__(self):
+        self.conn = db_pool.get_connection()
+        self.cur = self.conn.cursor()
+    
+    def execute(self, *args, **kwargs):
+        return self.cur.execute(*args, **kwargs)
+        
+    def fetchone(self):
+        return self.cur.fetchone()
+        
+    def fetchall(self):
+        return self.cur.fetchall()
+        
+    def close(self):
+        self.cur.close()
+        self.conn.close()
+
 def get_cursor():
-    try:
-        db.ping(reconnect=True, attempts=3, delay=2)
-    except mysql.connector.Error:
-        globals()["db"] = mysql.connector.connect(**_config)
-    return db.cursor()
+    return ManagedCursor()
 
 def get_new_connection():
     """Tạo kết nối riêng — dùng cho MQTT thread để tránh race condition."""

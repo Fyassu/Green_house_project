@@ -16,90 +16,113 @@ enum PlantState {
 };
 
 const char* ssid      = "Wokwi-GUEST";
-const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_server = "3.120.44.48";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-#include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
 
+#define ROTL32(x, r) (((x) << (r)) | ((x) >> (32 - (r))))
+#define ROTR32(x, r) (((x) >> (r)) | ((x) << (32 - (r))))
+
 const char* AES_KEY = "MySuperSecretKey";
-const char* AES_IV  = "1234567890123456";
 
-String encryptAES(String plainText) {
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
-  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)AES_KEY, 128);
+void speck_encrypt_block(uint32_t pt[2], uint32_t ct[2], const uint32_t rk[27]) {
+  uint32_t y = pt[0];
+  uint32_t x = pt[1];
+  for (int i = 0; i < 27; i++) {
+    x = (ROTR32(x, 8) + y) ^ rk[i];
+    y = ROTL32(y, 3) ^ x;
+  }
+  ct[0] = y;
+  ct[1] = x;
+}
 
+void speck_key_schedule(const uint8_t key[16], uint32_t rk[27]) {
+  uint32_t k[4];
+  memcpy(k, key, 16);
+  
+  rk[0] = k[0];
+  uint32_t l[29];
+  l[0] = k[1];
+  l[1] = k[2];
+  l[2] = k[3];
+  
+  for (int i = 0; i < 26; i++) {
+    uint32_t l_new = (ROTR32(l[i], 8) + rk[i]) ^ i;
+    l[i+3] = l_new;
+    rk[i+1] = ROTL32(rk[i], 3) ^ l_new;
+  }
+}
+
+void speck_ctr_encrypt(const uint8_t* in, uint8_t* out, size_t len, const uint8_t key[16], uint64_t iv) {
+  uint32_t rk[27];
+  speck_key_schedule(key, rk);
+  
+  size_t num_blocks = (len + 7) / 8;
+  for (size_t j = 0; j < num_blocks; j++) {
+    uint64_t counter = iv + j;
+    uint32_t pt[2];
+    pt[0] = counter & 0xFFFFFFFF;
+    pt[1] = (counter >> 32) & 0xFFFFFFFF;
+    
+    uint32_t ct[2];
+    speck_encrypt_block(pt, ct, rk);
+    
+    uint8_t keystream[8];
+    memcpy(keystream, ct, 8);
+    
+    size_t start = j * 8;
+    size_t end = (start + 8 > len) ? len : start + 8;
+    for (size_t idx = start; idx < end; idx++) {
+      out[idx] = in[idx] ^ keystream[idx - start];
+    }
+  }
+}
+
+String encryptSpeck(String plainText) {
   int len = plainText.length();
-  int pad = 16 - (len % 16);
-  int paddedLen = len + pad;
-  unsigned char* paddedData = (unsigned char*)malloc(paddedLen);
-  memcpy(paddedData, plainText.c_str(), len);
-  for (int i = len; i < paddedLen; i++) paddedData[i] = pad;
-
-  unsigned char* encryptedData = (unsigned char*)malloc(paddedLen);
-  unsigned char iv[16];
-  memcpy(iv, AES_IV, 16);
-
-  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, iv, paddedData, encryptedData);
-
+  uint8_t* outData = (uint8_t*)malloc(len);
+  
+  speck_ctr_encrypt((const uint8_t*)plainText.c_str(), outData, len, (const uint8_t*)AES_KEY, 0x1234567890abcdefULL);
+  
   size_t olen = 0;
-  mbedtls_base64_encode(NULL, 0, &olen, encryptedData, paddedLen);
+  mbedtls_base64_encode(NULL, 0, &olen, outData, len);
   unsigned char* base64Data = (unsigned char*)malloc(olen + 1);
-  mbedtls_base64_encode(base64Data, olen, &olen, encryptedData, paddedLen);
+  mbedtls_base64_encode(base64Data, olen, &olen, outData, len);
   base64Data[olen] = '\0';
-
+  
   String result = String((char*)base64Data);
-
-  free(paddedData);
-  free(encryptedData);
+  free(outData);
   free(base64Data);
-  mbedtls_aes_free(&aes);
-
   return result;
 }
 
-String decryptAES(String base64Text) {
+String decryptSpeck(String base64Text) {
   size_t olen = 0;
   mbedtls_base64_decode(NULL, 0, &olen, (const unsigned char*)base64Text.c_str(), base64Text.length());
   unsigned char* encryptedData = (unsigned char*)malloc(olen);
   mbedtls_base64_decode(encryptedData, olen, &olen, (const unsigned char*)base64Text.c_str(), base64Text.length());
-
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
-  mbedtls_aes_setkey_dec(&aes, (const unsigned char*)AES_KEY, 128);
-
-  unsigned char* decryptedData = (unsigned char*)malloc(olen);
-  unsigned char iv[16];
-  memcpy(iv, AES_IV, 16);
-
-  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, olen, iv, encryptedData, decryptedData);
-
-  int pad = decryptedData[olen - 1];
-  String result = "";
-  if(pad > 0 && pad <= 16) {
-    int originalLen = (int)olen - pad;
-    if(originalLen > 0) {
-      decryptedData[originalLen] = '\0';
-      result = String((char*)decryptedData);
-    }
-  }
-
+  
+  uint8_t* decryptedData = (uint8_t*)malloc(olen + 1);
+  speck_ctr_encrypt(encryptedData, decryptedData, olen, (const uint8_t*)AES_KEY, 0x1234567890abcdefULL);
+  decryptedData[olen] = '\0';
+  
+  String result = String((char*)decryptedData);
   free(encryptedData);
   free(decryptedData);
-  mbedtls_aes_free(&aes);
-
   return result;
 }
 
 
-// ── Simulation speed ── 12× (1 simulated minute = 5 real seconds)
-const unsigned long SIM_SPEED        = 12;
-const unsigned long SEND_INTERVAL_MS = 10000UL / SIM_SPEED;  //  833 ms
-const unsigned long SENSOR_READ_MS   =  2000UL / SIM_SPEED;  //  167 ms
-const unsigned long MOTION_LIGHT_MS  = 15000UL / SIM_SPEED;  // 1250 ms
+// ── Real-time Timing Configuration ──
+const unsigned long SEND_INTERVAL_MS = 3000;  // Gửi lên MQTT mỗi 3 giây
+const unsigned long SENSOR_READ_MS   = 200;   // Đọc cảm biến LDR/Soil + cập nhật LCD mỗi 200ms
+const unsigned long DHT_READ_MS      = 2000;  // DHT22 cần ít nhất 2 giây (2000ms) để không bị lỗi NaN
+const unsigned long MOTION_LIGHT_MS  = 15000; // Đèn bật 15 giây
+const unsigned long RECONNECT_INTERVAL_MS = 5000; // Thử kết nối lại MQTT mỗi 5 giây
+const unsigned long PRINT_STATUS_MS  = 5000;  // In Serial Monitor mỗi 5 giây (tránh lag Wokwi)
 
 // PIN CONFIG
 #define DHT_PIN          15
@@ -125,37 +148,26 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 PlantState plantState = GOOD;
 PlantState previousState = GOOD;
 
-// SENSOR DATA — effective values (ambient + actuator feedback), used everywhere
-float temperature = 0;
-float humidity    = 0;
-int   soilPercent = 0;
-int   lightPercent = 0;
-bool  motionDetected = false;
-
-// AMBIENT — raw hardware readings from Wokwi sensors
-float ambientTemp  = 0.0f;
-float ambientHum   = 0.0f;
-int   ambientSoil  = 0;
-int   ambientLight = 0;
-
-// EFFECTIVE — accumulate actuator feedback over time
-float effTemp  = 0.0f;
-float effHum   = 0.0f;
-float effSoil  = 0.0f;
-float effLight = 0.0f;
-bool  feedbackReady = false;
+// SENSOR DATA — volatile vì chia sẻ giữa 2 lõi CPU
+volatile float temperature = 0;
+volatile float humidity    = 0;
+volatile int   soilPercent = 0;
+volatile int   lightPercent = 0;
+volatile bool  motionDetected = false;
 
 // COMMAND OVERRIDES (-1 = auto, 0/1 = override for fan/pump, 0/45/90 = servo)
-int8_t fanCmd   = -1;
-int8_t pumpCmd  = -1;
-int    servoCmd = -1;
+volatile int8_t fanCmd   = -1;
+volatile int8_t pumpCmd  = -1;
+volatile int    servoCmd = -1;
+volatile int8_t lightCmd = -1;
+volatile bool securityMode = true; // Bật chức năng bảo vệ mặc định
 
-// ACTUATOR STATES
-bool fanState = false;
-bool pumpState = false;
-bool lightStatus = false;
+// ACTUATOR STATES — volatile vì chia sẻ giữa 2 lõi CPU
+volatile bool fanState = false;
+volatile bool pumpState = false;
+volatile bool lightStatus = false;
 
-int roofPosition = 90;
+volatile int roofPosition = 90;
 
 unsigned long motionLightOnTime = 0;
 bool motionLightEverTriggered = false;
@@ -176,11 +188,10 @@ void sendData()
     json += "\"light_status\":"   + String(lightStatus ? "true" : "false");
     json += "}";
 
-    String encrypted = encryptAES(json);
+    String encrypted = encryptSpeck(json);
 
-    Serial.println("\n[ESP32] Gửi dữ liệu cảm biến (Publish):");
-    Serial.println(" -> Raw JSON: " + json);
-    Serial.println(" -> Encrypted: " + encrypted);
+    Serial.println("Before encryption (JSON): " + json);
+    Serial.println("After encryption (Base64): " + encrypted);
 
     mqttClient.publish("greenhouse/sensors/data", encrypted.c_str());
   }
@@ -188,6 +199,11 @@ void sendData()
 
 unsigned long lastSend       = 0UL - SEND_INTERVAL_MS;  // triggers on first loop iteration
 unsigned long lastSensorRead = 0;
+unsigned long lastDHTRead    = 0UL - DHT_READ_MS;
+unsigned long lastReconnectAttempt = 0;
+unsigned long lastPrintStatus = 0;
+
+volatile bool motionSendFlag = false;
 
 // JSON PARSERS (dùng cho lệnh điều khiển nhận qua MQTT)
 int8_t parseJsonBool(const String& json, const String& key) {
@@ -222,34 +238,31 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  Serial.println("\n[ESP32] Nhận lệnh điều khiển (Subscribe):");
-  Serial.print(" <- Encrypted Raw: ");
-  Serial.println(message);
+  Serial.println("Before decryption (Base64): " + message);
 
-  String decrypted = decryptAES(message);
-  Serial.print(" <- Decrypted JSON: ");
-  Serial.println(decrypted);
+  String decrypted = decryptSpeck(message);
+  Serial.println("After decryption (JSON): " + decrypted);
 
   fanCmd   = parseJsonBool(decrypted, "fan");
   pumpCmd  = parseJsonBool(decrypted, "pump");
   servoCmd = parseJsonInt(decrypted,  "servo");
+  lightCmd = parseJsonBool(decrypted, "light");
+  
+  int8_t sec = parseJsonBool(decrypted, "security");
+  if (sec >= 0) {
+    securityMode = (sec == 1);
+  }
 }
 
-void mqttReconnect() {
-  int retries = 0;
-  while (!mqttClient.connected() && retries < 5) {
-    retries++;
-    Serial.print("Attempting MQTT connection...");
+void mqttReconnectNonBlocking() {
+  if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL_MS) {
+    lastReconnectAttempt = millis();
+    
     String clientId = "ESP32Client-";
     clientId += String(random(0xffff), HEX);
+    
     if (mqttClient.connect(clientId.c_str())) {
-      Serial.println("connected");
       mqttClient.subscribe("greenhouse/commands/control");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 2 seconds");
-      delay(2000);
     }
   }
 }
@@ -293,94 +306,19 @@ void warningMelody() {
   }
 }
 
-// TIME
-int currentHour() {
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)) return 12;
-  return timeinfo.tm_hour;
-}
-
 // READ SENSORS
 void readSensors() {
-  TempAndHumidity data = dht.getTempAndHumidity();
-  if (!isnan(data.temperature)) ambientTemp = data.temperature;
-  if (!isnan(data.humidity))    ambientHum  = data.humidity;
+  if (millis() - lastDHTRead >= DHT_READ_MS) {
+    TempAndHumidity data = dht.getTempAndHumidity();
+    if (!isnan(data.temperature)) temperature = data.temperature;
+    if (!isnan(data.humidity))    humidity  = data.humidity;
+    lastDHTRead = millis();
+  }
 
   int soilRaw  = analogRead(SOIL_PIN);
   int lightRaw = analogRead(LDR_PIN);
-  ambientSoil  = (int)map(soilRaw,  0, 4095, 100, 0);
-  ambientLight = (int)map(lightRaw, 0, 4095, 0, 100);
-
-  // First read: seed effective values from hardware so there's no jump
-  if (!feedbackReady) {
-    effTemp  = ambientTemp;
-    effHum   = ambientHum;
-    effSoil  = (float)ambientSoil;
-    effLight = (float)ambientLight;
-    feedbackReady = true;
-  }
-
-  // Expose current effective values as the working sensor globals
-  temperature  = constrain(effTemp,  5.0f,  60.0f);
-  humidity     = constrain(effHum,   0.0f, 100.0f);
-  soilPercent  = (int)constrain(effSoil,  0.0f, 100.0f);
-  lightPercent = (int)constrain(effLight, 0.0f, 100.0f);
-
-  motionDetected = digitalRead(PIR_PIN);
-}
-
-// ACTUATOR FEEDBACK — mirrors ACTUATOR_EFFECTS + ENV_DRIFT in model.js
-// Called every SEND_INTERVAL_MS (833 ms = 1 simulated 10-s tick).
-// Effective values gradually approach ambient (greenhouse not perfectly insulated),
-// then natural drift and actuator deltas are applied on top.
-void applyActuatorFeedback() {
-  if (!feedbackReady) return;
-
-  // Pull effective values toward ambient (heat / humidity exchange with outside)
-  // 0.02 = slow bleed-through so actuator effects stay clearly visible
-  const float APPROACH = 0.02f;
-  effTemp  += (ambientTemp - effTemp) * APPROACH;
-  effHum   += (ambientHum  - effHum)  * APPROACH;
-  effSoil  += (ambientSoil - effSoil) * APPROACH;
-  effLight  = (float)ambientLight;   // light tracks hardware directly
-
-  // ENV_DRIFT: natural greenhouse accumulation per tick
-  effTemp += 0.15f;
-  effHum  -= 0.25f;
-  effSoil -= 1.0f;
-
-  // Fan: cools room, slight evaporative humidity rise
-  if (fanState) {
-    if (effTemp > 22.0f) effTemp -= 0.4f;
-    if (effHum  < 85.0f) effHum  += 0.3f;
-  }
-  // Pump: raises soil moisture, adds humidity
-  if (pumpState) {
-    if (effSoil < 95.0f) effSoil = min(95.0f, effSoil + 3.0f);
-    if (effHum  < 88.0f) effHum  += 1.0f;
-  }
-  // Roof position
-  if (roofPosition == 0) {          // fully open — strong ventilation
-    if (effTemp > 24.0f) effTemp -= 0.8f;
-    if (effHum  < 80.0f) effHum  += 0.2f;
-  } else if (roofPosition == 45) {  // half open — partial shade + gentle flow
-    if (effTemp > 26.0f) effTemp -= 0.3f;
-    if (effLight > 10.0f) effLight -= 6.0f;
-  } else {                          // closed — greenhouse effect
-    if (effTemp < 55.0f) effTemp += 0.2f;
-  }
-
-  // Clamp to physical bounds
-  effTemp  = constrain(effTemp,  5.0f,  60.0f);
-  effHum   = constrain(effHum,   0.0f, 100.0f);
-  effSoil  = constrain(effSoil,  0.0f, 100.0f);
-  effLight = constrain(effLight, 0.0f, 100.0f);
-
-  // Expose to sensor globals so sendData() uses the freshly computed values
-  temperature  = effTemp;
-  humidity     = effHum;
-  soilPercent  = (int)effSoil;
-  lightPercent = (int)effLight;
+  soilPercent  = (int)map(soilRaw,  0, 4095, 100, 0);
+  lightPercent = (int)map(lightRaw, 0, 4095, 0, 100);
 }
 
 // PLANT HEALTH
@@ -428,23 +366,35 @@ void moveRoof(int target) {
 
 void controlRoof() {
   if (servoCmd >= 0) { moveRoof(servoCmd); return; }
-  int hour = currentHour();
   if (temperature > 34)                               { moveRoof(0);  return; }
-  if (hour >= 11 && hour <= 14 && lightPercent > 75)  { moveRoof(45); return; }
+  if (lightPercent > 75)                              { moveRoof(45); return; }
   moveRoof(90);
 }
 
 // MOTION LIGHT
 void controlMotionLight() {
-  if (motionDetected && lightPercent < 25) {
-    motionLightOnTime = millis();
-    motionLightEverTriggered = true;
+  if (lightCmd >= 0) {
+    lightStatus = (lightCmd == 1);
+  } else {
+    // Chế độ tự động
+    if (!securityMode) {
+      // Khi TẮT chế độ bảo vệ: phát hiện chuyển động thì tự động bật đèn cảnh báo
+      if (motionDetected) {
+        motionLightOnTime = millis();
+        motionLightEverTriggered = true;
+      }
+      lightStatus = motionLightEverTriggered && (millis() - motionLightOnTime < MOTION_LIGHT_MS);
+    } else {
+      // Khi BẬT bảo vệ: Đèn không tự động sáng để còi hú làm nhiệm vụ cảnh báo chính
+      lightStatus = false;
+    }
   }
-  lightStatus = motionLightEverTriggered && (millis() - motionLightOnTime < MOTION_LIGHT_MS);
   digitalWrite(ALARM_LED_PIN, lightStatus ? HIGH : LOW);
 
-  bool night = currentHour() >= 18 || currentHour() < 6;
-  if (night && motionDetected) warningMelody();
+  // Nếu bảo vệ BẬT và phát hiện chuyển động -> Còi cảnh báo hú báo động
+  if (securityMode && motionDetected) {
+    warningMelody();
+  }
 }
 
 // CRITICAL ALERT
@@ -458,34 +408,70 @@ void criticalMonitor() {
   previousState = plantState;
 }
 
-// LCD
+// LCD — chỉ ghi lại khi giá trị thay đổi (đỡ I2C load cho Wokwi)
+float lcdLastTemp = -999;
+int   lcdLastSoil = -1;
+float lcdLastHum  = -999;
+int   lcdLastLight = -1;
+
 void updateLCD() {
-  char line1[17];
-  snprintf(line1, sizeof(line1), "T:%2.1f S:%02d%%", temperature, soilPercent);
-  lcd.print("                ");
-  lcd.setCursor(0,0);
-  lcd.print(line1);
-  lcd.setCursor(0,1);
-  switch(plantState) {
-    case GOOD:     lcd.print("GOOD            "); break;
-    case SLOW:     lcd.print("SLOW            "); break;
-    case DECLINE:  lcd.print("DECLINE         "); break;
-    case CRITICAL: lcd.print("CRITICAL        "); break;
-    case DEAD:     lcd.print("DEAD            "); break;
+  // So sánh giá trị hiện tại với giá trị trên LCD
+  bool tempChanged  = ((int)(temperature * 10) != (int)(lcdLastTemp * 10));
+  bool soilChanged  = (soilPercent != lcdLastSoil);
+  bool humChanged   = ((int)(humidity * 10) != (int)(lcdLastHum * 10));
+  bool lightChanged = (lightPercent != lcdLastLight);
+
+  if (!tempChanged && !soilChanged && !humChanged && !lightChanged) return;
+
+  if (tempChanged || soilChanged) {
+    char line1[17];
+    snprintf(line1, sizeof(line1), "T:%2.1f S:%02d%%", temperature, soilPercent);
+    lcd.setCursor(0, 0);
+    lcd.print(line1);
+    lcd.print("  ");  // xoá rác cuối dòng
+    lcdLastTemp = temperature;
+    lcdLastSoil = soilPercent;
+  }
+
+  if (humChanged || lightChanged) {
+    char line2[17];
+    snprintf(line2, sizeof(line2), "H:%2.1f L:%02d%%", humidity, lightPercent);
+    lcd.setCursor(0, 1);
+    lcd.print(line2);
+    lcd.print("  ");  // xoá rác cuối dòng
+    lcdLastHum = humidity;
+    lcdLastLight = lightPercent;
   }
 }
 
-// SERIAL MONITOR
-void printStatus() {
-  Serial.println("==========");
-  Serial.printf("Temp: %.1f C\r\n",     temperature);
-  Serial.printf("Humidity: %.1f %%\r\n", humidity);
-  Serial.printf("Soil: %d %%\r\n",      soilPercent);
-  Serial.printf("Light: %d %%\r\n",     lightPercent);
-  Serial.printf("Fan: %s\r\n",          fanState    ? "ON":"OFF");
-  Serial.printf("Pump: %s\r\n",         pumpState   ? "ON":"OFF");
-  Serial.printf("Roof: %d\r\n",         roofPosition);
-  Serial.printf("MotionLight: %s\r\n",  lightStatus ? "ON":"OFF");
+// (Removed printStatus)
+
+// FreeRTOS TASK: Chạy trên Core 0 (MQTT + AES + Serial)
+void mqttTask(void* parameter) {
+  unsigned long taskLastSend = 0;
+  unsigned long taskLastReconnect = 0;
+
+  for (;;) {
+    if (!mqttClient.connected()) {
+      if (millis() - taskLastReconnect > RECONNECT_INTERVAL_MS) {
+        taskLastReconnect = millis();
+        String clientId = "ESP32Client-" + String(random(0xffff), HEX);
+        if (mqttClient.connect(clientId.c_str())) {
+          mqttClient.subscribe("greenhouse/commands/control");
+        }
+      }
+    } else {
+      mqttClient.loop();
+    }
+
+    if (motionSendFlag || (millis() - taskLastSend >= SEND_INTERVAL_MS)) {
+      motionSendFlag = false;
+      sendData();
+      taskLastSend = millis();
+    }
+
+    vTaskDelay(10 / portTICK_PERIOD_MS); // loop mỗi 10ms ảo để giữ kết nối MQTT
+  }
 }
 
 // SETUP
@@ -505,18 +491,36 @@ void setup() {
   ledcAttachPin(BUZZER_PIN, 0);
 
   WiFi.begin("Wokwi-GUEST", "");
+  espClient.setTimeout(1000); // Tránh kết nối mạng treo quá lâu gây lỗi Watchdog
   while(WiFi.status() != WL_CONNECTED) delay(100);
 
   mqttClient.setServer(mqtt_server, 1883);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);
 
-  configTime(7 * 3600, 0, "pool.ntp.org");
   moveRoof(90);
+
+  // Tạo task MQTT chạy trên Core 0 (Core 1 chạy loop chính)
+  xTaskCreatePinnedToCore(
+    mqttTask,
+    "MQTTTask",
+    8192,
+    NULL,
+    0,   // Đặt độ ưu tiên = 0 để chia sẻ CPU với IDLE0, tránh lỗi Watchdog
+    NULL,
+    0
+  );
 }
 
-// LOOP
+// LOOP — chạy trên Core 1, CHỈ xử lý cảm biến và LCD
 void loop() {
+  bool currentMotion = digitalRead(PIR_PIN);
+  if (currentMotion != motionDetected) {
+    motionDetected = currentMotion;
+    controlMotionLight();
+    motionSendFlag = true;
+  }
+
   if (millis() - lastSensorRead >= SENSOR_READ_MS) {
     readSensors();
     plantState = evaluatePlant();
@@ -526,18 +530,8 @@ void loop() {
     controlMotionLight();
     criticalMonitor();
     updateLCD();
-    printStatus();
     lastSensorRead = millis();
   }
 
-  if (!mqttClient.connected()) mqttReconnect();
-  mqttClient.loop();
-
-  if (millis() - lastSend >= SEND_INTERVAL_MS) {
-    applyActuatorFeedback();
-    sendData();
-    lastSend = millis();
-  }
-
-  delay(20);
+  delay(20); // Tăng delay ảo lên 20ms giúp giảm tải CPU Wokwi, kéo tốc độ mô phỏng (Simulation Speed) lên 100%
 }
