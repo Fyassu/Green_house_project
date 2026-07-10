@@ -15,16 +15,16 @@ Hệ thống được thiết kế tối ưu với 2 luồng dữ liệu độc 
 ```text
   ┌────────────────────────────────────────────────────────┐
   │                   Wokwi (ESP32 ảo)                     │
-  │   Core 1: Đọc cảm biến (200ms) & Điều khiển, Vẽ LCD    │
-  │   Core 0: MQTTTask (Kết nối mạng & Giải mã/Mã hóa)     │
+  │   Core 1: Đọc cảm biến (200ms) & Điều khiển actuators  │
+  │ Core 0: MQTTTask (Truyền nhận dữ liệu & Giải mã/Mã hóa)│
   └─────────────────┬────────────────────────┬─────────────┘
-                    │ (1) Publish Data       │ (2) Subscribe Cmd
+                    │  Publish Data          │  Subscribe Cmd
                     ▼                        ▲
   ┌─────────────────┴────────────────────────┴─────────────┐
   │                   Public MQTT Broker                   │
   │                  (broker.hivemq.com)                   │
   └─────────────────┬────────────────────────┴─────────────┘
-                    │ (1) Subscribe Data     │ (2) Publish Cmd
+                    │  Subscribe Data        │ Publish Cmd
                     ▼                        ▲
   ┌─────────────────┴────────────────────────┴─────────────┐
   │                 Flask Backend (Python)                 │
@@ -37,7 +37,7 @@ Hệ thống được thiết kế tối ưu với 2 luồng dữ liệu độc 
   │ │  REST & SSE    │─────┘    └──────────────────────┘   │      └─────────────────────┘
   │ └───────┬────────┘                                     │
   └─────────┼────────────────────────────────┬─────────────┘
-            │ (3) SSE Stream                 │ (2) REST API
+            │  SSE Stream                    │  REST API
             ▼                               ▲▼
   ┌─────────┴────────────────────────────────┴─────────────┐
   │         Web App (Dashboard & Visualization)            │
@@ -86,6 +86,17 @@ Giao thức MQTT của hệ thống đi qua Public Broker công cộng nên rấ
 ### Tầng Ứng dụng (Application Layer - Xác thực và Phân quyền):
 * **JSON Web Token (JWT):** Tại tầng Web, Dashboard yêu cầu người dùng phải đăng nhập thành công qua `/api/auth`. Một chuỗi mã thông báo Token (JWT) được cấp bằng Secret Key của server và lưu trữ tại LocalStorage của trình duyệt.
 * **Bảo vệ Endpoint API:** Mọi luồng API dùng để điều khiển thiết bị (`POST /api/control`) và truy xuất dữ liệu cảm biến (`GET /api/history`, `GET /api/latest`) trên ứng dụng Web đều đòi hỏi client phải gửi Token hợp lệ (Bearer Token) đính kèm trong Header. Người lạ truy cập vào trang Web nếu không có JWT sẽ bị chặn quyền ở cấp độ Ứng dụng và không thể tương tác hay xem số liệu của nhà kính.
+
+### Tầng Vật lý (Physical Layer Security - Nhận định & Hướng phát triển tương lai):
+Bảo mật Lớp Vật lý (PLS) khai thác sự không hoàn hảo tự nhiên của môi trường truyền dẫn không dây (như nhiễu trắng, suy hao, thăng giáng kênh truyền) để bảo mật hệ thống từ cấp độ vật lý vô tuyến. Tuy nhiên, việc áp dụng các kỹ thuật PLS cốt lõi vào hệ thống nhà kính hiện tại gặp phải những giới hạn thực tế:
+* **Mã hóa kênh (Channel Coding) & Xử lý tín hiệu (Chèn nhiễu nhân tạo - AN):** Các kỹ thuật này (như mã LDPC, Polar codes hay MIMO) đòi hỏi phải can thiệp sâu vào dải băng gốc (Baseband) của phần cứng. Vi điều khiển ESP32 sử dụng vi mạch Wi-Fi thương mại đóng kín (Blackbox PHY/MAC), không cho phép lập trình viên tự do sửa đổi thuật toán mã hóa sóng vô tuyến hay chủ động phát nhiễu nhân tạo (Artificial Noise) như các hệ thống vô tuyến SDR (Software Defined Radio) đắt tiền.
+* **Truyền thông hợp tác (Cooperative Communication) & Lý thuyết trò chơi:** Đòi hỏi mạng lưới phức tạp gồm nhiều trạm lặp (Relay) phối hợp với nhau để phát nhiễu có chủ đích (Cooperative Jamming) về phía kẻ tấn công. Đồ án hiện tại cấu trúc theo dạng sao đơn giản (1 Node ESP32 $\rightarrow$ Router) nên không phù hợp để triển khai.
+* **Môi trường giả lập Wokwi:** Trình mô phỏng Wokwi cung cấp một kênh truyền mạng hoàn hảo (Perfect Channel), hoàn toàn không tái tạo các hiện tượng suy hao và nhiễu sóng của vật lý ngoài đời thực, do đó không tạo ra được mô hình "Kênh nghe lén" (Wiretap channel) để khai thác.
+
+**Đề xuất Hướng phát triển tương lai (Kỹ thuật Sinh khóa Bảo mật - CSI):**
+Mặc dù hệ thống đã cực kỳ an toàn với Mật mã học Speck ở Tầng Mạng và JWT ở Tầng Ứng dụng, nhưng việc khóa giải mã Speck đang bị gán tĩnh (hardcode) trong code ESP32 vẫn tiềm ẩn rủi ro lộ lọt nếu bị sao chép phần mềm. 
+Để giải quyết triệt để, hệ thống đề xuất hướng phát triển **Sinh khóa bí mật (Secret Key Generation)** dựa trên Trạng thái kênh truyền (CSI - Channel State Information) khi đưa vào thực tiễn: 
+Bằng cách triển khai ESP32 thật giao tiếp Wi-Fi với một Local Broker đặt trực tiếp tại vườn, cả hai thiết bị có thể trích xuất các tính chất phản xạ sóng vô tuyến ngẫu nhiên bên trong nhà kính để tự động đồng thuận sinh ra một Khóa giải mã (Secret Key) động. Kẻ tấn công (Eve) đứng ở ngoài vườn sẽ có môi trường sóng hoàn toàn khác, dẫn đến việc không thể tạo ra Khóa tương tự để giải mã dữ liệu MQTT.
 
 ---
 
