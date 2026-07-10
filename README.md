@@ -23,22 +23,30 @@ Hệ thống được thiết kế tối ưu với 2 luồng dữ liệu độc 
   ┌─────────────────┴────────────────────────┴─────────────┐
   │                   Public MQTT Broker                   │
   │                  (broker.hivemq.com)                   │
-  └─────────────────┬────────────────────────┬─────────────┘
+  └─────────────────┬────────────────────────┴─────────────┘
                     │ (1) Subscribe Data     │ (2) Publish Cmd
                     ▼                        ▲
   ┌─────────────────┴────────────────────────┴─────────────┐
-  │                 Flask Backend (Python)                 │ ◄──► MySQL DB
-  └─────────────────┬────────────────────────┬─────────────┘
-                    │ (3) SSE Stream         │ (2) REST API
-                    ▼                        ▲
-  ┌─────────────────┴────────────────────────┴─────────────┐
-  │                3D Digital Twin Web App                 │
+  │                 Flask Backend (Python)                 │
+  │                                                        │
+  │ ┌────────────────┐                                     │
+  │ │  MQTT Worker   │─────┐                               │
+  │ └────────────────┘     │    ┌──────────────────────┐   │      ┌─────────────────────┐
+  │                        ├───►│MySQL Connection Pool │◄──┼─────►│ MySQL Database      │
+  │ ┌────────────────┐     │    │    (pool_size=10)    │   │      │ (Lưu trữ lịch sử)   │
+  │ │  REST & SSE    │─────┘    └──────────────────────┘   │      └─────────────────────┘
+  │ └───────┬────────┘                                     │
+  └─────────┼────────────────────────────────┬─────────────┘
+            │ (3) SSE Stream                 │ (2) REST API
+            ▼                               ▲▼
+  ┌─────────┴────────────────────────────────┴─────────────┐
+  │         Web App (Dashboard & Visualization)            │
   └────────────────────────────────────────────────────────┘
 ```
 
-* **Luồng 1 (Từ phần cứng lên Backend):** ESP32 định kỳ đọc dữ liệu từ cảm biến, **mã hóa** chuỗi dữ liệu (JSON) bằng thuật toán Speck và gửi (Publish) qua MQTT. Backend Python nhận, giải mã bằng chính thuật toán Speck và lưu vào CSDL MySQL.
-* **Luồng 2 (Từ Web xuống phần cứng):** Người dùng bấm nút trên Dashboard, trình duyệt gọi REST API `POST /api/control` đến Backend. Backend **mã hóa** JSON chứa lệnh bằng Speck rồi đẩy (Publish) qua MQTT. ESP32 nhận, giải mã ngược bằng Speck và kích hoạt các chân GPIO tương ứng để điều khiển thiết bị.
-* **Luồng 3 (Đồng bộ thời gian thực SSE):** Ngay khi Backend có dữ liệu cảm biến mới từ phần cứng, hoặc khi trạng thái thiết bị vừa được người dùng thay đổi, luồng **Server-Sent Events (SSE)** tại endpoint `GET /api/stream` sẽ lập tức bắn một luồng dữ liệu liên tục thẳng xuống trình duyệt. Giao diện Web và 3D Twin bắt được event này sẽ tự động thay đổi số liệu và hiệu ứng (bật đèn, xoay quạt...) theo thời gian thực mà không cần tải lại trang.
+* **Luồng 1 (Từ phần cứng lên Backend):** ESP32 định kỳ đọc dữ liệu từ cảm biến, **mã hóa** chuỗi dữ liệu bằng thuật toán Speck và đẩy (Publish) qua MQTT. Backend Python (chạy ngầm luồng MQTT Worker) nhận, giải mã bằng Speck, sau đó cấp phát 1 connection từ **MySQL Connection Pool** để ghi dữ liệu lịch sử vào Database rồi lập tức trả lại connection.
+* **Luồng 2 (Từ Web xuống phần cứng):** Trình duyệt gọi REST API `POST /api/control` (chạy trên luồng riêng của Flask). API này sẽ mượn 1 connection khác từ **Pool** để cập nhật Database. Việc sử dụng Pool giải quyết triệt để lỗi "đụng độ" (Thread-Collision) khi luồng ngầm MQTT và luồng Web Flask cùng cố gắng truy cập Database tại một thời điểm, đảm bảo tính toàn vẹn dữ liệu (Thread-Safety).
+* **Luồng 3 (Đồng bộ thời gian thực SSE):** Ngay sau khi MQTT Worker lưu xong dữ liệu vào Database, nó lập tức kích hoạt luồng **Server-Sent Events (SSE)** tại endpoint `/api/stream` bắn thẳng dữ liệu xuống trình duyệt. Giao diện 3D Twin bắt được event này sẽ tự động thay đổi hiệu ứng ngay tắp lự.
 
 ---
 
@@ -48,19 +56,19 @@ Hệ thống sử dụng vi điều khiển trung tâm **ESP32 DevKit v4** kết
 
 * **🌡️ Cảm biến môi trường:**
   * **DHT22 (Pin 15):** Đo nhiệt độ và độ ẩm không khí.
-  * **Potentiometer (Pin 34):** Giả lập cảm biến đo độ ẩm đất.
-  * **LDR (Pin 35):** Cảm biến quang trở đo cường độ ánh sáng môi trường.
-  * **PIR Sensor (Pin 21):** Cảm biến hồng ngoại phát hiện chuyển động đột nhập.
+  * **Potentiometer (Pin 35):** Giả lập cảm biến đo độ ẩm đất.
+  * **LDR (Pin 34):** Cảm biến quang trở đo cường độ ánh sáng môi trường.
+  * **PIR Sensor (Pin 14):** Cảm biến hồng ngoại phát hiện chuyển động đột nhập.
 
 * **⚙️ Thiết bị thực thi (Actuators) & Đèn báo trạng thái (LEDs):**
-  * **Đèn LED Xanh Dương (Blue LED - Pin 14):** Biểu diễn trạng thái bật/tắt của hệ thống Quạt làm mát (Fan).
-  * **Đèn LED Xanh Lá (Green LED - Pin 12):** Biểu diễn trạng thái bật/tắt của hệ thống Bơm tưới nước (Pump).
+  * **Đèn LED Xanh Dương (Blue LED - Pin 4):** Biểu diễn trạng thái bật/tắt của hệ thống Quạt làm mát (Fan).
+  * **Đèn LED Xanh Lá (Green LED - Pin 5):** Biểu diễn trạng thái bật/tắt của hệ thống Bơm tưới nước (Pump).
   * **Đèn LED Đỏ (Red LED - Pin 27):** Biểu diễn trạng thái báo động khẩn cấp (sáng khi chế độ bảo vệ đang BẬT và có người đột nhập).
   * **Còi Buzzer (Pin 23):** Phát ra âm thanh cảnh báo khi có đột nhập.
-  * **Servo (Pin 2):** Động cơ điều khiển mái che nhà kính (0°: mở 100%, 45°: mở 50%, 90°: đóng hoàn toàn).
+  * **Servo (Pin 18):** Động cơ điều khiển mái che nhà kính (0°: mở 100%, 45°: mở 50%, 90°: đóng hoàn toàn).
 
 * **📺 Thiết bị hiển thị tại chỗ:**
-  * **LCD 16x2 I2C (SDA 22 / SCL 26):** Hiển thị trực tiếp tại vườn các giá trị đo đạc để giám sát cục bộ, chỉ cập nhật I2C khi có sự thay đổi chỉ số để tối ưu hiệu năng giả lập.
+  * **LCD 16x2 I2C (Mặc định: SDA 21 / SCL 22):** Hiển thị trực tiếp tại vườn các giá trị đo đạc để giám sát cục bộ, chỉ cập nhật I2C khi có sự thay đổi chỉ số để tối ưu hiệu năng giả lập.
 
 ---
 
@@ -161,6 +169,7 @@ Dưới đây là toàn bộ các Endpoint API được triển khai tại Backe
 | `GET` | `/api/stream` | Không | API mở kết nối liên tục Server-Sent Events (SSE). Bất cứ khi nào Wokwi gửi dữ liệu lên hoặc khi có người điều khiển trạng thái thiết bị, API này lập tức đẩy dữ liệu JSON về phía Web Client theo thời gian thực (Live Stream). |
 | `GET` | `/api/latest` | Có (Bearer) | Trả về thông số cảm biến mới nhất và trạng thái hiện tại của toàn bộ thiết bị (bao gồm cả các lệnh ghi đè). |
 | `GET` | `/api/history` | Có (Bearer) | Lấy lịch sử 100 bản ghi dữ liệu cảm biến gần nhất từ MySQL để vẽ biểu đồ Line Chart. |
-| `GET` | `/api/commands` | Có (Bearer) | Truy xuất trạng thái lệnh đang được ghi đè (Override) hiện tại (quạt, bơm, đèn, chế độ bảo vệ). |
+| `GET` | `/api/commands` | Không | Truy xuất trạng thái lệnh đang được ghi đè (Override) hiện tại. API này mở cho ESP32 lấy dữ liệu mà không cần Auth. |
 | `POST` | `/api/control` | Có (Bearer) | Nhận JSON lệnh điều khiển (VD: `{"device": "fan", "value": true}`). Backend sẽ gộp chung với các lệnh khác, mã hóa bằng Speck-CTR và gửi xuống phần cứng qua MQTT. |
-| `GET` | `/api/test` | Có (Bearer) | API chuyên dùng cho các công cụ Diagnose nội bộ để kiểm tra luồng xác thực JWT xem có hoạt động đúng không. |
+| `POST` | `/api/sensor-data` | Không | API phụ trợ để nhận dữ liệu cảm biến định dạng thô (không mã hóa) phục vụ các kịch bản test hoặc thiết bị giả lập cũ. |
+| `GET` | `/api/test` | Không | API Health Check. Truy vấn `SELECT COUNT(*)` xuống DB để đếm tổng số bản ghi và trả về trạng thái hệ thống, được gọi lúc khởi động. |
