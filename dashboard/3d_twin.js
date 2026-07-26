@@ -14,6 +14,44 @@ let scifiRectLight; // Biến cho đèn LED dài
 let scifiLightMaterials = [];
 let isScifiLightOn = false;
 
+// Sức khỏe cây trên mô hình 3D — tô màu lá/quả theo evaluatePlant() (model.js),
+// dùng chung cho cả dữ liệu thật (Wokwi) lẫn mô phỏng (simulation.js)
+let plantHealthMaterials = [];
+const PLANT_HEALTH_TINT = {
+    GOOD:     { color: null,     mix: 0    },
+    SLOW:     { color: 0xC9B458, mix: 0.18 }, // vàng nhạt — hơi thiếu sức sống
+    DECLINE:  { color: 0x8B6B3D, mix: 0.45 }, // nâu héo
+    CRITICAL: { color: 0x5A4632, mix: 0.70 }, // nâu sẫm, gần héo hẳn
+    DEAD:     { color: 0x2B2620, mix: 0.90 }, // gần đen — cây chết
+};
+
+// Màu chữ hiển thị trên bảng "Danh sách Cảm biến (Live)" — trùng với bảng màu
+// .plant-badge.X trong style.css (dùng cho badge chính ở tab Dashboard) để
+// nhất quán giữa 2 nơi hiển thị cùng một trạng thái.
+const PLANT_HEALTH_COLOR = {
+    GOOD:     "var(--green)",
+    SLOW:     "var(--yellow)",
+    DECLINE:  "var(--orange)",
+    CRITICAL: "var(--red)",
+    DEAD:     "var(--purple)",
+};
+
+function applyPlantHealthTint(state) {
+    // Không cache theo "state không đổi thì bỏ qua" — model cây tải bất đồng bộ
+    // (gltfLoader), có thể vào plantHealthMaterials muộn hơn lần gọi đầu tiên;
+    // gọi lại mỗi lần (chi phí không đáng kể, chỉ vài material) để chắc chắn
+    // material mới nạp cũng được tô đúng màu ngay.
+    const cfg = PLANT_HEALTH_TINT[state] || PLANT_HEALTH_TINT.GOOD;
+    plantHealthMaterials.forEach(mat => {
+        if (!mat.userData.baseColor) return;
+        if (!cfg.color || cfg.mix <= 0) {
+            mat.color.copy(mat.userData.baseColor);
+        } else {
+            mat.color.copy(mat.userData.baseColor).lerp(new THREE.Color(cfg.color), cfg.mix);
+        }
+    });
+}
+
 // Audio Variables
 let audioListener;
 let fanAudio;
@@ -357,8 +395,11 @@ function isValidModelName(name) {
     dirLight.shadow.camera.right = 500;
     dirLight.shadow.camera.near = 0.1;
     dirLight.shadow.camera.far = 2000;
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
+    // Giảm 2048->1024 (implementation_plan.md mục 4.4): khác biệt thị giác
+    // không đáng kể ở khoảng cách camera tổng quan nhà kính, giảm đáng kể chi
+    // phí render 1 pass shadow map mỗi frame.
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
     dirLight.shadow.bias = -0.001;
     scene.add(dirLight);
     
@@ -384,7 +425,7 @@ function isValidModelName(name) {
 
     // 6.1 MÔI TRƯỜNG (GROUND) - SỬ DỤNG ẢNH TEXTURE BỀ MẶT ĐÁ
     const textureLoader = new THREE.TextureLoader();
-    const groundTexture = textureLoader.load('models/rocky_terrain_02_diff_4k.png', function() {
+    const groundTexture = textureLoader.load('models/rocky_terrain_02_diff_4k.webp', function() {
         console.log("Đã tải xong Texture bề mặt đá!");
     });
     // Lặp lại họa tiết để tránh bị mờ khi phóng to
@@ -407,6 +448,11 @@ function isValidModelName(name) {
 
     // 6.2 TẢI ĐÈN SCIFI VÀO NHÀ KÍNH (ACTUATOR)
     const gltfLoader = new THREE.GLTFLoader();
+    // Bắt buộc để giải mã các model đã nén Draco ở Giai đoạn 1 (implementation_plan.md
+    // mục 4.1) — thiếu bước này GLTFLoader không đọc được mesh, model không hiện ra.
+    const dracoLoader = new THREE.DRACOLoader();
+    dracoLoader.setDecoderPath('vendor/draco/');
+    gltfLoader.setDRACOLoader(dracoLoader);
     gltfLoader.load('models/scifi_light_02/scene.gltf', function(gltf) {
         scifiLightModel = gltf.scene;
         
@@ -474,7 +520,10 @@ function isValidModelName(name) {
         scifiPointLight.decay = 1.5;           // Độ phai của ánh sáng theo khoảng cách
         scifiPointLight.distance = 600;        // Chiếu xa 600 đơn vị (phủ hết nhà kính)
         
-        scifiPointLight.castShadow = true;
+        // Tắt đổ bóng cho đèn phụ (implementation_plan.md mục 4.4): đây là đèn
+        // trang trí, chỉ giữ đổ bóng cho dirLight (nguồn sáng chính/mặt trời)
+        // để tránh render thêm 1 shadow map pass không cần thiết mỗi frame.
+        scifiPointLight.castShadow = false;
         scifiPointLight.shadow.bias = -0.001;
         
         scene.add(scifiPointLight);
@@ -528,11 +577,18 @@ function isValidModelName(name) {
             const scale = maxDim > 0 ? (item.targetScale / maxDim) : 1;
             model1.scale.set(scale, scale, scale);
 
-            // Bật bóng
+            // Bật bóng + đăng ký material để tô màu theo sức khỏe cây
             model1.traverse(child => {
                 if (child.isMesh) {
                     child.castShadow = true;
                     child.receiveShadow = true;
+                    const mats = Array.isArray(child.material) ? child.material : [child.material];
+                    mats.forEach(mat => {
+                        if (mat && mat.color && !mat.userData.baseColor) {
+                            mat.userData.baseColor = mat.color.clone();
+                            plantHealthMaterials.push(mat);
+                        }
+                    });
                 }
             });
 
@@ -549,7 +605,8 @@ function isValidModelName(name) {
             scene.add(model1);
             editableObjects.push(model1);
 
-            // Nhân bản mô hình 2
+            // Nhân bản mô hình 2 (clone() dùng chung tham chiếu material với model1,
+            // nên đã được đăng ký ở trên — không cần lặp lại traverse cho model2)
             let model2 = model1.clone();
             let pos2 = fixedPositions[item.name + "_2"];
             if (pos2) model2.position.set(pos2.x, pos2.y, pos2.z);
@@ -999,8 +1056,12 @@ function initSimulationUI() {
             const h = Math.floor(currentHour);
             const m = (currentHour - h) * 60;
             display.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-            
+
             updateSimulation();
+            // Kéo tay thanh thời gian cũng phản ánh ngay vào dữ liệu mô phỏng
+            // (nếu đang bật) — chủ yếu để ánh sáng theo baseline giờ mới ngay
+            // lập tức, xem simulation.js.
+            if (typeof runSimTick === 'function') runSimTick(0);
         });
     }
 
@@ -1045,6 +1106,17 @@ function initSimulationUI() {
         
         const elPir = document.getElementById('sim-live-pir');
         if (elPir) elPir.innerHTML = data.motion_detected ? "Có người" : "Không";
+
+        // Trạng thái sức khỏe cây — evaluatePlant() (model.js), dùng chung với
+        // badge tab Dashboard và hiệu ứng tô màu cây 3D bên dưới (mục 4)
+        const plantState = typeof evaluatePlant === 'function'
+            ? evaluatePlant(data.temperature, data.soil_moisture, data.humidity)
+            : null;
+        const elPlant = document.getElementById('sim-live-plant');
+        if (elPlant && plantState) {
+            elPlant.textContent = plantState;
+            elPlant.style.color = PLANT_HEALTH_COLOR[plantState] || "";
+        }
 
         // 2. UPDATE ACTUATORS UI & 3D MODELS
         const now = Date.now();
@@ -1140,6 +1212,11 @@ function initSimulationUI() {
 
         // 3. UPDATE 3D LCD SCREEN (Giống hệt LCD Wokwi: T, S và H, L)
         drawIoTScreen(true, data.temperature, data.soil_moisture, data.humidity, data.light_level);
+
+        // 4. TÔ MÀU CÂY THEO SỨC KHỎE (dùng lại plantState đã tính ở mục 1)
+        if (plantState) {
+            applyPlantHealthTint(plantState);
+        }
     };
 
     const btnEditMode = document.getElementById('btn-edit-mode');
@@ -1178,6 +1255,24 @@ function initSimulationUI() {
             });
             console.log("TỌA ĐỘ MÔ HÌNH HIỆN TẠI:\n" + JSON.stringify(result, null, 2));
             alert("Đã in tọa độ và góc xoay ra Console (nhấn F12 để copy)!");
+        });
+    }
+
+    // Chế độ demo nhẹ (Giai đoạn 4 - implementation_plan.md mục 4.4): tắt đổ
+    // bóng + giảm độ phân giải render + tắt âm thanh để chạy mượt trên máy yếu
+    // khi demo. Không đụng vào rainSystem.visible/currentWeather (do updateSceneLighting
+    // đã tự quản lý theo thời tiết) để tránh xung đột trạng thái.
+    const btnDemoLite = document.getElementById('btn-demo-lite');
+    if (btnDemoLite) {
+        btnDemoLite.addEventListener('click', () => {
+            window.setDemoLiteMode(!window.isDemoLiteMode);
+            if (window.isDemoLiteMode) {
+                btnDemoLite.classList.add('active');
+                btnDemoLite.innerHTML = '<i class="fa-solid fa-bolt" style="color: yellow;"></i> Tắt Chế độ demo nhẹ';
+            } else {
+                btnDemoLite.classList.remove('active');
+                btnDemoLite.innerHTML = '<i class="fa-solid fa-bolt"></i> Bật Chế độ demo nhẹ';
+            }
         });
     }
 
@@ -1406,6 +1501,27 @@ window.stop3DAnimation = function() {
     }
 };
 
+// Chế độ demo nhẹ (Giai đoạn 4 - implementation_plan.md mục 4.4): tắt đổ bóng
+// (renderer.shadowMap.enabled là công tắc tổng, không phụ thuộc castShadow của
+// từng đèn) + giảm devicePixelRatio + tắt âm thanh qua master volume của
+// AudioListener (không cần sửa từng chỗ set volume riêng lẻ theo actuator).
+window.isDemoLiteMode = false;
+window.setDemoLiteMode = function(enabled) {
+    window.isDemoLiteMode = enabled;
+    if (renderer) {
+        renderer.shadowMap.enabled = !enabled;
+        // Mặc định renderer chưa từng gọi setPixelRatio nên đang ở baseline =1
+        // (Three.js default) — giữ nguyên =1 khi tắt lite mode, chỉ HẠ xuống
+        // 0.75 khi bật lite mode để giảm tải thực sự cho máy yếu (không đặt
+        // cao hơn 1 cho chế độ thường vì sẽ làm NẶNG hơn hiện trạng trên màn
+        // hình DPI cao, ngược với mục tiêu "mượt hơn").
+        renderer.setPixelRatio(enabled ? 0.75 : 1);
+    }
+    if (audioListener && typeof audioListener.setMasterVolume === 'function') {
+        audioListener.setMasterVolume(enabled ? 0 : 1);
+    }
+};
+
 function animate() {
     if (!window.is3DTabActive) {
         window._3dAnimFrameId = null;
@@ -1421,11 +1537,17 @@ function animate() {
         lastTimeMs = now;
         
         // 1 giây đời thực = 1 giờ mô phỏng (Có thể chỉnh chậm lại bằng cách nhân nhỏ hơn)
-        currentHour += delta * 1.5; 
+        // Giảm còn 1/2 tốc độ gốc (1.5 -> 0.75) theo yêu cầu — đồng bộ với SIM_RATE
+        // (simulation.js) cũng giảm 1/2 để 2 tốc độ giữ nguyên tỉ lệ ban đầu.
+        currentHour += delta * 0.75;
         if (currentHour >= 24) currentHour = 0; // Quay về 0h hôm sau
         
         updateSimulationTimeUI();
         updateSimulation();
+        // Chế độ mô phỏng dữ liệu (simulation.js) — cùng đồng hồ currentHour ở
+        // trên, để cảnh 3D (mặt trời/bầu trời) và dữ liệu cảm biến giả lập
+        // luôn khớp nhau, không lệch pha.
+        if (typeof runSimTick === 'function') runSimTick(delta);
     }
 
     // Animate Rain

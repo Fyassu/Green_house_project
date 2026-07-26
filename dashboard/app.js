@@ -4,6 +4,7 @@ const SIM_SPEED        = 12;                                      // 1 simulated
 const LATEST_INTERVAL  = Math.round(10_000 / SIM_SPEED);         // 833 ms
 const HISTORY_INTERVAL = Math.round(30_000 / SIM_SPEED);         // 2500 ms
 const SPARK_MAX        = 20;
+const PREDICT_HORIZON_MINUTES = 30;   // dự báo 30 phút MÔ PHỎNG tới (Giai đoạn 2 - Analytics Layer)
 
 // ─── Auth helpers ─────────────────────────────────
 function getAuthHeaders() {
@@ -84,6 +85,21 @@ function setLastUpdate(ts) {
   const d = new Date(ts.replace(" ", "T"));
   document.getElementById("last-update").textContent =
     "Cập nhật: " + d.toLocaleTimeString("vi-VN");
+}
+
+// ─── Analytics/Prediction Layer state ──────────────
+// Số điểm dữ liệu THẬT hiện có trong labels/dataset của 3 chart chính (không
+// tính đoạn nhãn/giá trị dự báo đã nối thêm bởi updateForecast()). Dùng để
+// SSE (appendToCharts) biết cắt bỏ đúng đoạn dự báo cũ trước khi thêm điểm
+// thật mới — tránh chèn nhãn "hiện tại" vào sau các nhãn "tương lai" đã vẽ.
+let chartHistoryLen = 0;
+
+function stripForecastTail() {
+  [[chartTemp, 3], [chartHum, 1], [chartSoil, 4]].forEach(([ch, idx]) => {
+    if (!ch) return;
+    ch.data.labels           = ch.data.labels.slice(0, chartHistoryLen);
+    ch.data.datasets[idx].data = ch.data.datasets[idx].data.slice(0, chartHistoryLen);
+  });
 }
 
 // ─── Sparkline buffers ────────────────────────────
@@ -212,6 +228,10 @@ let sseSource = null;
 let sseActive = false;
 
 function appendToCharts(row) {
+  // Cắt bỏ đoạn dự báo (nếu có) trước khi thêm điểm thật — nếu không, nhãn
+  // "hiện tại" sẽ bị chèn vào sau các nhãn "tương lai" đã vẽ bởi updateForecast().
+  stripForecastTail();
+
   const label = new Date((row.created_at || "").replace(" ", "T"))
     .toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const MAX = 100;
@@ -219,16 +239,19 @@ function appendToCharts(row) {
     if (ch.data.labels.length >= MAX) {
       ch.data.labels.shift();
       ch.data.datasets.forEach(ds => ds.data.shift());
+      chartHistoryLen--;
     }
   });
   chartTemp.data.labels.push(label);
   chartTemp.data.datasets[0].data.push(row.temperature);
   chartTemp.data.datasets[1].data.push(ACTUATOR_RULES.fan.onAbove);
   chartTemp.data.datasets[2].data.push(ACTUATOR_RULES.roof.fullOpenAbove);
+  chartTemp.data.datasets[3].data.push(null);   // giữ đồng bộ độ dài; forecast sẽ được vẽ lại bởi fetchPredict()
   chartTemp.update("none");
 
   chartHum.data.labels.push(label);
   chartHum.data.datasets[0].data.push(row.humidity);
+  chartHum.data.datasets[1].data.push(null);
   chartHum.update("none");
 
   chartSoil.data.labels.push(label);
@@ -236,7 +259,10 @@ function appendToCharts(row) {
   chartSoil.data.datasets[1].data.push(row.light_level);
   chartSoil.data.datasets[2].data.push(ACTUATOR_RULES.pump.onBelow);
   chartSoil.data.datasets[3].data.push(ACTUATOR_RULES.pump.offAbove);
+  chartSoil.data.datasets[4].data.push(null);
   chartSoil.update("none");
+
+  chartHistoryLen++;
 }
 
 function connectSSE() {
@@ -246,6 +272,7 @@ function connectSSE() {
   sseSource.onopen = () => { sseActive = true; };
 
   sseSource.onmessage = (e) => {
+    if (simState) return;   // đang mô phỏng (simulation.js) — bỏ qua dữ liệu SSE thật nếu Wokwi vẫn đang chạy song song
     let d;
     try { d = JSON.parse(e.data); } catch { return; }
     if (!d || d.temperature == null) return;
@@ -269,6 +296,7 @@ function connectSSE() {
 
 // ─── Fetch latest ─────────────────────────────────
 async function fetchLatest() {
+  if (simState) return;   // đang ở chế độ mô phỏng (simulation.js) — không ghi đè bằng dữ liệu thật
   try {
     const res = await fetch(API + "/api/latest", { headers: getAuthHeaders() });
     if (res.status === 401) { handle401(); return; }
@@ -332,6 +360,21 @@ function thresholdDS(label, color) {
   };
 }
 
+// Helper: forecast dataset — nét đứt cùng màu với đường dữ liệu thật, nối tiếp
+// ngay sau điểm hiện tại (xem updateForecast()). Giai đoạn 2 - Analytics Layer.
+function forecastDS(label, color) {
+  return {
+    label,
+    data:        [],
+    borderColor: color,
+    borderDash:  [6, 3],
+    borderWidth: 2,
+    pointRadius: 0,
+    fill:        false,
+    tension:     0.3,
+  };
+}
+
 function initCharts() {
   // Temperature — single axis, 2 threshold lines
   chartTemp = new Chart(document.getElementById("chart-temp"), {
@@ -347,6 +390,7 @@ function initCharts() {
         },
         thresholdDS(`${ACTUATOR_RULES.fan.onAbove}°C — bật quạt`,       "rgba(227,179,65,0.75)"),
         thresholdDS(`${ACTUATOR_RULES.roof.fullOpenAbove}°C — mở mái`, "rgba(248,81,73,0.55)"),
+        forecastDS("Dự báo nhiệt độ", "#f85149"),
       ],
     },
     options: {
@@ -370,6 +414,7 @@ function initCharts() {
           backgroundColor: "rgba(88,166,255,0.07)",
           fill: true, tension: 0.35, pointRadius: 2, borderWidth: 2,
         },
+        forecastDS("Dự báo độ ẩm KK", "#58a6ff"),
       ],
     },
     options: {
@@ -401,6 +446,7 @@ function initCharts() {
         },
         thresholdDS(`${ACTUATOR_RULES.pump.onBelow}% — bật bơm`,  "rgba(63,185,80,0.65)"),
         thresholdDS(`${ACTUATOR_RULES.pump.offAbove}% — tắt bơm`, "rgba(63,185,80,0.40)"),
+        forecastDS("Dự báo độ ẩm đất", "#3fb950"),
       ],
     },
     options: {
@@ -416,6 +462,7 @@ function initCharts() {
 function updateCharts(rows) {
   const sorted = [...rows].reverse();
   const n      = sorted.length;
+  chartHistoryLen = n;   // mốc để stripForecastTail()/updateForecast() biết ranh giới thật/dự báo
   const labels = sorted.map(r => {
     const d = new Date(r.created_at.replace(" ", "T"));
     return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -425,10 +472,12 @@ function updateCharts(rows) {
   chartTemp.data.datasets[0].data = sorted.map(r => r.temperature);
   chartTemp.data.datasets[1].data = Array(n).fill(ACTUATOR_RULES.fan.onAbove);
   chartTemp.data.datasets[2].data = Array(n).fill(ACTUATOR_RULES.roof.fullOpenAbove);
+  chartTemp.data.datasets[3].data = Array(n).fill(null);   // xóa forecast cũ, chờ fetchPredict() vẽ lại
   chartTemp.update("none");
 
   chartHum.data.labels           = labels;
   chartHum.data.datasets[0].data = sorted.map(r => r.humidity);
+  chartHum.data.datasets[1].data = Array(n).fill(null);
   chartHum.update("none");
 
   chartSoil.data.labels           = labels;
@@ -436,7 +485,57 @@ function updateCharts(rows) {
   chartSoil.data.datasets[1].data = sorted.map(r => r.light_level);
   chartSoil.data.datasets[2].data = Array(n).fill(ACTUATOR_RULES.pump.onBelow);
   chartSoil.data.datasets[3].data = Array(n).fill(ACTUATOR_RULES.pump.offAbove);
+  chartSoil.data.datasets[4].data = Array(n).fill(null);
   chartSoil.update("none");
+}
+
+// ─── Dự báo (Analytics/Prediction Layer — Giai đoạn 2) ─────────────────────
+// Nối đường nét đứt ngay sau điểm dữ liệu thật cuối cùng, dùng chung nhãn thời
+// gian thực (real_seconds_ahead quy đổi từ SIM_SPEED) để khớp trục X với lịch sử.
+function updateForecast(forecastPoints, lastRow) {
+  if (!forecastPoints?.length || !lastRow?.created_at) return;
+
+  stripForecastTail();   // đảm bảo nối vào đúng ranh giới thật/dự báo, kể cả khi gọi 2 lần liên tiếp
+  const histLen   = chartHistoryLen;
+  const baseTime  = new Date(lastRow.created_at.replace(" ", "T")).getTime();
+  const anchorPad = Array(Math.max(histLen - 1, 0)).fill(null);
+
+  const forecastLabels = forecastPoints.map(p => {
+    const t = new Date(baseTime + p.real_seconds_ahead * 1000);
+    return t.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  });
+
+  // Điểm neo (lastRow) đặt tại index histLen-1 — trùng đúng nhãn cuối cùng của
+  // lịch sử đã có sẵn, nên đường nét đứt bắt đầu đúng vị trí đường liền nét kết
+  // thúc (không có khoảng hở giữa thật và dự báo).
+  chartTemp.data.labels           = [...chartTemp.data.labels, ...forecastLabels];
+  chartTemp.data.datasets[3].data = [...anchorPad, lastRow.temperature, ...forecastPoints.map(p => p.temperature)];
+
+  chartHum.data.labels           = [...chartHum.data.labels, ...forecastLabels];
+  chartHum.data.datasets[1].data = [...anchorPad, lastRow.humidity, ...forecastPoints.map(p => p.humidity)];
+
+  chartSoil.data.labels           = [...chartSoil.data.labels, ...forecastLabels];
+  chartSoil.data.datasets[4].data = [...anchorPad, lastRow.soil_moisture, ...forecastPoints.map(p => p.soil_moisture)];
+
+  chartTemp.update("none");
+  chartHum.update("none");
+  chartSoil.update("none");
+}
+
+async function fetchPredict(lastRow) {
+  if (!lastRow) return;
+  try {
+    const res = await fetch(
+      `${API}/api/predict?horizon_minutes=${PREDICT_HORIZON_MINUTES}`,
+      { headers: getAuthHeaders() }
+    );
+    if (res.status === 401) { handle401(); return; }
+    if (!res.ok) return;
+    const d = await res.json();
+    if (d.forecast?.length) updateForecast(d.forecast, lastRow);
+  } catch {
+    // silent — dự báo là tính năng bổ trợ, không chặn luồng dữ liệu thật nếu lỗi
+  }
 }
 
 async function fetchHistory() {
@@ -446,7 +545,10 @@ async function fetchHistory() {
     if (res.status === 401) { handle401(); return; }
     if (!res.ok) return;
     const rows = await res.json();
-    if (rows.length) updateCharts(rows);
+    if (rows.length) {
+      updateCharts(rows);
+      fetchPredict(rows[0]);   // rows[0] = bản ghi mới nhất (API trả về ORDER BY created_at DESC)
+    }
   } catch {
     // silent — giữ nguyên chart cũ
   }

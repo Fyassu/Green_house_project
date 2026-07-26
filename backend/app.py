@@ -19,8 +19,9 @@ import time
 from functools import wraps
 import struct
 
-from db import get_cursor, get_new_connection
+from db import get_cursor, get_new_connection, get_training_window
 from model import evaluate_plant
+from prediction import simulate_forward, backtest_compare, hybrid_forecast, detect_actuator_anomalies
 
 app = Flask(__name__)
 CORS(app)
@@ -346,6 +347,125 @@ def history():
         return jsonify({
             "error": str(e)
         }), 500
+
+
+# ==========================
+# GET PREDICT (Analytics/Prediction Layer — Giai đoạn 2)
+# ==========================
+@app.route("/api/predict", methods=["GET"])
+@token_required
+def predict():
+    try:
+        horizon = request.args.get("horizon_minutes", default=30, type=int)
+
+        cursor = get_cursor()
+        cursor.execute("""
+            SELECT temperature, humidity, soil_moisture, light_level,
+                   fan_status, pump_status, servo_angle
+            FROM sensor_data
+            ORDER BY id DESC
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        cursor.close()
+
+        if row is None:
+            return jsonify({"error": "No data"}), 404
+
+        reading = {
+            "temperature":   row[0],
+            "humidity":      row[1],
+            "soil_moisture": row[2],
+            "light_level":   row[3],
+            "fan_status":    bool(row[4]),
+            "pump_status":   bool(row[5]),
+            "servo_angle":   row[6],
+        }
+
+        forecast = simulate_forward(reading, horizon_minutes=horizon)
+
+        # Hybrid Model (Giai đoạn 4 - implementation_plan.md mục 3.3): hiệu
+        # chỉnh physics bằng bias học từ vài điểm lịch sử gần nhất. Không chặn
+        # response nếu chưa đủ dữ liệu — hybrid sẽ suy biến về đúng physics.
+        hybrid = None
+        try:
+            recent_rows = get_training_window(hours=1, max_rows=50)
+            hybrid = hybrid_forecast(recent_rows, reading, horizon_minutes=horizon)
+        except Exception:
+            pass
+
+        return jsonify({
+            "method":          "physics_lumped_parameter",
+            "assumption":      "Actuator giữ nguyên trạng thái hiện tại (fan/pump/servo) trong suốt horizon dự báo",
+            "base_reading":    reading,
+            "horizon_minutes": max(5, min(horizon, 120)),
+            "forecast":        forecast,
+            "hybrid_forecast": hybrid["forecast"] if hybrid else None,
+            "hybrid_bias":     hybrid["bias"] if hybrid else None,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================
+# GET PREDICT COMPARE (Analytics Layer — Giai đoạn 3: Physics vs Data-driven RMSE)
+# ==========================
+@app.route("/api/predict/compare", methods=["GET"])
+@token_required
+def predict_compare():
+    try:
+        column  = request.args.get("column", default="temperature", type=str)
+        holdout = request.args.get("holdout", default=10, type=int)
+        hours   = request.args.get("hours", default=6, type=int)
+
+        valid_columns = {"temperature", "humidity", "soil_moisture", "light_level"}
+        if column not in valid_columns:
+            return jsonify({"error": f"column phải là một trong {sorted(valid_columns)}"}), 400
+        holdout = max(3, min(holdout, 50))
+
+        rows = get_training_window(hours=hours)
+        if len(rows) < holdout + 15:
+            return jsonify({
+                "error": f"Chưa đủ dữ liệu lịch sử để backtest (cần tối thiểu {holdout + 15} "
+                         f"bản ghi trong {hours} giờ gần nhất, hiện có {len(rows)}). "
+                         f"Thử tăng `hours` hoặc chờ hệ thống chạy lâu hơn."
+            }), 400
+
+        result = backtest_compare(rows, column, holdout=holdout)
+        result["hours_window"]     = hours
+        result["training_points"]  = len(rows) - holdout
+        return jsonify(result)
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================
+# GET ANOMALY (Analytics Layer — Giai đoạn 4: phát hiện bơm/quạt bất thường)
+# ==========================
+@app.route("/api/anomaly", methods=["GET"])
+@token_required
+def anomaly():
+    try:
+        window = request.args.get("window", default=10, type=int)
+        window = max(3, min(window, 50))
+
+        rows = get_training_window(hours=1, max_rows=200)
+        if len(rows) < window + 1:
+            return jsonify({
+                "error": f"Chưa đủ dữ liệu để đánh giá (cần tối thiểu {window + 1} "
+                         f"bản ghi trong 1 giờ gần nhất, hiện có {len(rows)}).",
+                "anomalies": [],
+            }), 200
+
+        results = detect_actuator_anomalies(rows, window=window)
+        return jsonify({"window": window, "anomalies": results})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ==========================

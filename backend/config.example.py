@@ -1,4 +1,4 @@
 DB_HOST     = "localhost"
 DB_USER     = "root"
-DB_PASSWORD = "your_mysql_password_here"
+DB_PASSWORD = "password"
 DB_NAME     = "smart_greenhouse"

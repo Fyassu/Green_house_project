@@ -4,15 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Greenhouse Dashboard</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.0/umd/index.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Vendor hóa cục bộ (Giai đoạn 1 - implementation_plan.md mục 4.3): loại bỏ phụ thuộc CDN cho Three.js r128 + loaders + Chart.js để demo không phụ thuộc mạng -->
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/OrbitControls.js"></script>
+  <script src="vendor/TransformControls.js"></script>
+  <script src="vendor/fflate.js"></script>
+  <script src="vendor/FBXLoader.js"></script>
+  <script src="vendor/GLTFLoader.js"></script>
+  <!-- Bắt buộc cho model đã nén Draco ở Giai đoạn 1 (tomato/cantaloupe/strawberry/
+       Micro Sprinkler/IoT_box/soil_sensor) — thiếu file này GLTFLoader không giải
+       mã được mesh, model không hiện ra (đã tự gặp lỗi này khi kiểm thử). -->
+  <script src="vendor/DRACOLoader.js"></script>
+  <script src="vendor/OBJLoader.js"></script>
+  <script src="vendor/MTLLoader.js"></script>
+  <script src="vendor/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="style.css?v=4">
 </head>
@@ -228,6 +233,17 @@
           <input type="range" id="sim-time-slider" class="sim-slider" min="0" max="24" step="0.1" value="12">
         </div>
 
+        <div class="sim-env-row" style="flex-direction: column; gap: 6px;">
+          <button id="btn-sim-mode" class="btn-weather" style="width: 100%;"
+                  title="Tự sinh nhiệt độ/độ ẩm/đất/ánh sáng liên kết theo giờ trong ngày và hiệu ứng actuator, không cần chạy Wokwi. Bấm Play ở trên để đồng hồ tự trôi, hoặc kéo tay thanh Thời gian.">
+            <i class="fa-solid fa-flask"></i> Bật mô phỏng dữ liệu (không cần Wokwi)
+          </button>
+          <button id="btn-sim-extreme" class="btn-weather" style="width: 100%; border-color: var(--red); color: var(--red);"
+                  title="Đẩy nhiệt độ/độ ẩm/đất/ánh sáng sang mức khắc nghiệt (nóng + khô hạn) và trả actuator về AUTO, để quan sát quạt/bơm/mái che tự động cân bằng lại môi trường. Cần bật Mô phỏng dữ liệu trước.">
+            <i class="fa-solid fa-triangle-exclamation"></i> Kịch bản môi trường khắc nghiệt
+          </button>
+        </div>
+
         <div class="sim-env-row">
           <span class="sim-env-label">Thời tiết:</span>
           <button class="btn-weather active" data-weather="sunny"><i class="fa-solid fa-sun"></i> Nắng</button>
@@ -239,6 +255,13 @@
         <div class="sim-env-row" style="flex-direction: column; gap: 8px;">
           <button id="btn-edit-mode" class="btn-weather" style="width: 100%;"><i class="fa-solid fa-cube"></i> Bật Edit Mode</button>
           <button id="btn-export-pos" class="btn-weather" style="width: 100%; display: none; background: var(--border);"><i class="fa-solid fa-print"></i> In Tọa Độ ra Console</button>
+        </div>
+
+        <h3 class="sim-env-title" style="margin-top: 15px;"><i class="fa-solid fa-gauge-high"></i> Hiệu năng</h3>
+        <div class="sim-env-row" style="flex-direction: column; gap: 8px;">
+          <button id="btn-demo-lite" class="btn-weather" style="width: 100%;" title="Tắt đổ bóng, giảm độ phân giải render, tắt âm thanh — dùng khi demo trên máy cấu hình thấp">
+            <i class="fa-solid fa-bolt"></i> Bật Chế độ demo nhẹ
+          </button>
         </div>
       </div>
 
@@ -256,6 +279,7 @@
           <tr><td style="padding:4px 0; font-weight:bold;">LDR</td><td>Cường độ sáng</td><td style="text-align:right; color:var(--yellow);" id="sim-live-ldr">--</td></tr>
           <tr><td style="padding:4px 0; font-weight:bold;">Soil</td><td>Độ ẩm đất</td><td style="text-align:right; color:#4da6ff;" id="sim-live-soil">--</td></tr>
           <tr><td style="padding:4px 0; font-weight:bold;">PIR</td><td>Chuyển động</td><td style="text-align:right; color:var(--red);" id="sim-live-pir">--</td></tr>
+          <tr><td style="padding:4px 0; font-weight:bold;">🌱 Cây trồng</td><td>Sức khỏe</td><td style="text-align:right; font-weight:700;" id="sim-live-plant">--</td></tr>
         </table>
 
         <h3 class="sim-env-title" style="margin-top: 15px; font-size: 12px;"><i class="fa-solid fa-list-check"></i> Điều khiển Thiết bị (Live)</h3>
@@ -330,8 +354,9 @@
 
   </main>
 
-  <script src="3d_twin.js?v=49"></script>
+  <script src="3d_twin.js?v=51"></script>
   <script src="model.js"></script>
+  <script src="simulation.js"></script>
   <script src="app.js?v=6"></script>
 </body>
 </html>

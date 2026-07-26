@@ -43,3 +43,10 @@ backup/
 
 # VS Code
 .vscode/
+
+# clangd/PlatformIO IDE index — local build artifact, not needed to run the project
+compile_commands.json
+
+# Wokwi CLI Automation Scenario — experimental, never worked (server-side alpha bug), not part of the running app
+wokwi-demo-scenario.yaml
+wokwi-test-minimal.yaml

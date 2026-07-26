@@ -12,3 +12,10 @@ paho-mqtt==2.1.0
 pycryptodome==3.23.0
 PyJWT==2.13.0
 Werkzeug==3.1.8
+# Giai đoạn 3 (Analytics Layer - Data-driven Model, implementation_plan.md mục 3.2)
+pandas==2.2.3
+statsmodels==0.14.4
+# Pin cứng: statsmodels 0.14.4 gọi scipy.optimize.fmin_l_bfgs_b(disp=...) — tham
+# số "disp" đã bị scipy loại bỏ ở bản mới (đã tự gặp lỗi TypeError khi cài
+# scipy mới nhất khi kiểm thử) → PHẢI ghim scipy<1.14 để statsmodels fit() chạy được.
+scipy==1.13.1

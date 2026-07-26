@@ -16,7 +16,10 @@ enum PlantState {
 };
 
 const char* ssid      = "Wokwi-GUEST";
-const char* mqtt_server = "3.120.44.48";
+// Dùng tên miền thay vì IP tĩnh: broker.hivemq.com là load-balancer với nhiều
+// IP xoay vòng phía sau, IP tĩnh cũ (3.120.44.48) đã die (test TCP timeout
+// khi kiểm thử) — khớp đúng địa chỉ backend/app.py đang dùng.
+const char* mqtt_server = "broker.hivemq.com";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
