@@ -17,7 +17,7 @@ PLANT_THRESHOLDS = {
     "SLOW":     {"temp_high": 30, "temp_low": 20, "soil": 50, "hum": 45},
 }
 
-# Mirrors controlFan / controlPump / controlRoof / controlMotionLight in sketch.ino
+# Mirrors controlFan / controlPump / controlShade / controlMotionLight in sketch.ino
 ACTUATOR_RULES = {
     "fan": {
         "on_above":  30,    # °C — turn fan ON  when temp > this
@@ -27,11 +27,12 @@ ACTUATOR_RULES = {
         "on_below":  45,    # % soil — turn pump ON  when soil < this
         "off_above": 65,    # % soil — turn pump OFF when soil > this
     },
-    "roof": {
-        "full_open_above":      34,   # °C — roof fully open (0°) when temp > this
-        "half_open_light_min":  75,   # % light — half-open (45°) condition
-        "half_open_hour_start": 11,   # hour range for half-open
-        "half_open_hour_end":   14,
+    "shade": {
+        "full_deploy_temp_above": 34,
+        "full_deploy_light_min":  85,
+        "half_deploy_light_min":  65,
+        "active_hour_start":      10,
+        "active_hour_end":        16,
     },
     "motion_light": {
         "trigger_below_light": 25,   # % light — activates when light < this
@@ -53,17 +54,15 @@ ACTUATOR_EFFECTS = {
         "soil": {"delta": +3.0, "limit": 95},   # field capacity
         "hum":  {"delta": +1.0, "limit": 88},   # irrigation mist ceiling
     },
-    "roof": {
-        "open": {
-            "temp":  {"delta": -0.8, "limit": 24},
-            "hum":   {"delta": +0.2, "limit": 80},
-        },
+    "shade": {
+        "retracted": {},
         "half": {
-            "temp":  {"delta": -0.3, "limit": 26},
-            "light": {"delta": -6,   "limit": 10},
+            "temp":  {"delta": -0.15, "limit": 24},
+            "light": {"delta": -25,   "limit": 0},
         },
-        "closed": {
-            "temp":  {"delta": +0.2, "limit": 55},
+        "full": {
+            "temp":  {"delta": -0.30, "limit": 24},
+            "light": {"delta": -55,   "limit": 0},
         },
     },
 }
@@ -85,10 +84,10 @@ ENV_BOUNDS = {
 }
 
 
-def roof_effect_key(angle: int) -> str:
-    if angle <= 0:   return "open"
+def shade_effect_key(angle: int) -> str:
+    if angle <= 0:   return "retracted"
     if angle < 90:   return "half"
-    return "closed"
+    return "full"
 
 
 def apply_effect(value: float, effect: dict) -> float:

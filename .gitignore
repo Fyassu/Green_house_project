@@ -7,9 +7,12 @@ project_goal.md
 # Planning & documentation (not needed to run project)
 *.md
 !README.md
+!PHYSICS_GUIDED_MODEL.md
+!DIGITAL_TWIN_COMPLETION_PLAN.md
 
 # Temp / log files
 *.txt
+*.log
 flask_err.txt
 flask_out.txt
 
@@ -27,8 +30,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environment
+# Virtual environment & local deps
 backend/greenhouse_wokwi/
+backend/venv/
+backend/.venv/
+.python_deps/
 
 # Credentials — NEVER commit
 backend/config.py

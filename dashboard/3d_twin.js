@@ -1150,7 +1150,7 @@ function initSimulationUI() {
         if (now - pending.servo > 25000) {
             if (elRoof) {
                 elRoof.innerHTML = data.servo_angle + "&deg;";
-                elRoof.className = "actuator-badge " + (data.servo_angle < 90 ? "on" : "off");
+                elRoof.className = "actuator-badge " + (data.servo_angle > 0 ? "on" : "off");
             }
             if (data.servo_angle === 0) targetStripeWidth = 0;
             else if (data.servo_angle === 45) targetStripeWidth = 32;
@@ -1725,7 +1725,7 @@ window.update3DTwinManual = function(device, value) {
         const elRoof = document.getElementById('sim-live-roof');
         if (elRoof) {
             elRoof.innerHTML = (value !== null) ? (value + "&deg;") : "--";
-            elRoof.className = "actuator-badge " + ((value !== null && value < 90) ? "on" : "off");
+        elRoof.className = "actuator-badge " + ((value !== null && value > 0) ? "on" : "off");
         }
     }
     else if (device === "light") {

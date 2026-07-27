@@ -1,64 +1,23 @@
-# Analytics/Prediction Layer
-# Giai đoạn 2 (implementation_plan.md mục 3.1): Physics-based Lumped Parameter Model
-# Giai đoạn 3 (implementation_plan.md mục 3.2): Data-driven Model (ARIMA) + so sánh RMSE
-# Giai đoạn 4 (implementation_plan.md mục 3.3, 3.4): Hybrid Model + Anomaly Detection
-#
-# Giả định đơn giản hóa của phần Physics-based (PHẢI nêu rõ khi báo cáo — xem
-# implementation_plan.md mục 6): actuator giữ nguyên trạng thái ON/OFF hiện tại
-# trong suốt horizon dự báo ("nếu không có gì thay đổi"). Không có tương tác
-# chéo giữa các biến ngoài những gì ACTUATOR_EFFECTS đã khai báo.
+# Analytics/prediction layer.
+# The physics-only path now uses the same unit-consistent PBM as training and
+# residual-PGML inference. Actuator state and the estimated outdoor boundary are
+# held constant over the requested horizon ("what if nothing else changes").
+# ARIMA/backtest/anomaly functions remain for historical comparisons.
 
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
 
-from model import ACTUATOR_EFFECTS, ENV_DRIFT, apply_effect, clamp_env, roof_effect_key
+from pbm_engine import (
+    GreenhouseState,
+    PHYSICS_MODEL_VERSION,
+    ProcessBasedModelEngine,
+)
+
+from ml_prediction.prediction_engine import ml_forecast
 
 TICK_SECONDS = 10   # 1 tick = 10 giây THỜI GIAN MÔ PHỎNG — mirrors model.py/model.js/sketch.ino
 SIM_SPEED    = 12   # mirrors dashboard/app.js SIM_SPEED — 1 phút mô phỏng = 5 giây thực
-
-
-def _to_internal(reading: dict) -> dict:
-    return {
-        "temp":  reading.get("temperature", 0) or 0,
-        "hum":   reading.get("humidity", 0) or 0,
-        "soil":  reading.get("soil_moisture", 0) or 0,
-        "light": reading.get("light_level", 0) or 0,
-    }
-
-
-def _to_external(state: dict) -> dict:
-    return {
-        "temperature":   round(state["temp"], 2),
-        "humidity":      round(state["hum"], 2),
-        "soil_moisture": round(state["soil"], 2),
-        "light_level":   round(state["light"], 2),
-    }
-
-
-def _advance_one_tick(state: dict, fan_on: bool, pump_on: bool, roof_key: str) -> dict:
-    """Tiến trạng thái môi trường đúng 1 tick (10s mô phỏng). Dùng chung bởi
-    simulate_forward() (Giai đoạn 2) và project_n_ticks() (Giai đoạn 3)."""
-    for key in ("temp", "hum", "soil", "light"):
-        state[key] = state[key] + ENV_DRIFT.get(key, 0)
-    if fan_on:
-        for k, eff in ACTUATOR_EFFECTS["fan"].items():
-            state[k] = apply_effect(state[k], eff)
-    if pump_on:
-        for k, eff in ACTUATOR_EFFECTS["pump"].items():
-            state[k] = apply_effect(state[k], eff)
-    for k, eff in ACTUATOR_EFFECTS["roof"][roof_key].items():
-        state[k] = apply_effect(state[k], eff)
-    for k in state:
-        state[k] = clamp_env(k, state[k])
-    return state
-
-
-def _actuator_flags(reading: dict) -> tuple[bool, bool, str]:
-    return (
-        bool(reading.get("fan_status")),
-        bool(reading.get("pump_status")),
-        roof_effect_key(reading.get("servo_angle", 90) or 90),
-    )
+_process_model = ProcessBasedModelEngine()
 
 
 def simulate_forward(reading: dict, horizon_minutes: int = 30, sample_every_ticks: int = 6) -> list[dict]:
@@ -78,32 +37,64 @@ def simulate_forward(reading: dict, horizon_minutes: int = 30, sample_every_tick
       - real_seconds_ahead: số giây THỰC kể từ hiện tại (sim_seconds_ahead / SIM_SPEED),
         dùng để đặt nhãn trục thời gian thực trên chart cho khớp với dữ liệu lịch sử.
     """
+    # ``sample_every_ticks`` is retained only for API compatibility. The
+    # scientific process model has a fixed reporting cadence of 5 minutes.
+    del sample_every_ticks
     horizon_minutes = max(5, min(int(horizon_minutes), 120))
+    state = GreenhouseState.from_mapping(reading)
+    fan_on = bool(reading.get("fan_status"))
+    pump_on = bool(reading.get("pump_status"))
+    servo_angle = int(reading.get("servo_angle", 0) or 0)
+    boundary = _process_model.estimate_boundary_from_observation(
+        state, servo_angle
+    )
 
-    state = _to_internal(reading)
-    fan_on, pump_on, roof_key = _actuator_flags(reading)
-
-    total_ticks = max(1, (horizon_minutes * 60) // TICK_SECONDS)
     trace = []
-    for tick in range(1, total_ticks + 1):
-        state = _advance_one_tick(state, fan_on, pump_on, roof_key)
-        if tick % sample_every_ticks == 0:
-            point = _to_external(state)
-            point["sim_seconds_ahead"]  = tick * TICK_SECONDS
-            point["real_seconds_ahead"] = round(tick * TICK_SECONDS / SIM_SPEED, 1)
-            trace.append(point)
-
+    elapsed_seconds = 0.0
+    remaining_seconds = float(horizon_minutes * 60)
+    while remaining_seconds > 0:
+        step_seconds = min(300.0, remaining_seconds)
+        state, _ = _process_model.advance(
+            state,
+            boundary,
+            fan_on,
+            pump_on,
+            servo_angle,
+            dt_seconds=step_seconds,
+        )
+        elapsed_seconds += step_seconds
+        remaining_seconds -= step_seconds
+        point = state.as_observation()
+        point["minute_offset"] = int(round(elapsed_seconds / 60.0))
+        point["sim_seconds_ahead"] = int(round(elapsed_seconds))
+        point["real_seconds_ahead"] = round(
+            elapsed_seconds / SIM_SPEED, 1
+        )
+        point["physics_model_version"] = PHYSICS_MODEL_VERSION
+        point["boundary_source"] = "estimated_from_indoor_observation"
+        trace.append(point)
     return trace
 
 
 def project_n_ticks(reading: dict, n_ticks: float) -> dict:
     """Trả về ĐÚNG 1 điểm dự báo sau n_ticks bước (physics-based) — dùng cho
     backtest_compare() khi cần so sánh với 1 điểm dữ liệu thực tế cụ thể."""
-    state = _to_internal(reading)
-    fan_on, pump_on, roof_key = _actuator_flags(reading)
-    for _ in range(max(1, round(n_ticks))):
-        state = _advance_one_tick(state, fan_on, pump_on, roof_key)
-    return _to_external(state)
+    state = GreenhouseState.from_mapping(reading)
+    fan_on = bool(reading.get("fan_status"))
+    pump_on = bool(reading.get("pump_status"))
+    servo_angle = int(reading.get("servo_angle", 0) or 0)
+    boundary = _process_model.estimate_boundary_from_observation(
+        state, servo_angle
+    )
+    state, _ = _process_model.advance(
+        state,
+        boundary,
+        fan_on,
+        pump_on,
+        servo_angle,
+        dt_seconds=max(TICK_SECONDS, float(n_ticks) * TICK_SECONDS),
+    )
+    return state.as_observation()
 
 
 # ─── Giai đoạn 3 — Data-driven Model (ARIMA) ────────────────────────────────
@@ -296,15 +287,13 @@ def detect_actuator_anomalies(history_rows: list[dict], window: int = ANOMALY_WI
     Ý tưởng: nếu actuator BẬT LIÊN TỤC suốt `window` bản ghi gần nhất nhưng đại
     lượng môi trường mà nó ảnh hưởng thay đổi ít hơn nhiều so với những gì mô
     hình vật lý (project_n_ticks) dự đoán — với ĐẦY ĐỦ mọi hiệu ứng đang diễn
-    ra đồng thời (quạt + bơm + mái + drift tự nhiên, không chỉ riêng actuator
+    ra đồng thời (quạt + bơm + mái che + drift tự nhiên, không chỉ riêng actuator
     đang xét) — hoặc thay đổi SAI HƯỚNG, thì nghi ngờ actuator đang hỏng/kẹt.
 
-    QUAN TRỌNG: "kỳ vọng" phải được tính bằng project_n_ticks() (tổng hợp mọi
-    hiệu ứng đồng thời), KHÔNG được chỉ lấy delta riêng của 1 actuator trong
-    ACTUATOR_EFFECTS — vì trong thực tế nhiều hiệu ứng cộng gộp cùng lúc (ví dụ
-    quạt đang làm mát NHƯNG mái đang đóng làm nóng lên cùng lúc), nếu chỉ so
-    với hiệu ứng riêng lẻ sẽ báo động giả liên tục dù hệ thống hoàn toàn khỏe
-    mạnh (đã tự phát hiện lỗi này khi kiểm thử bằng dữ liệu demo thật).
+    QUAN TRỌNG: "kỳ vọng" được tính bằng project_n_ticks(), tức rollout đồng
+    thời các cân bằng năng lượng, hơi nước và nước vùng rễ. Không dùng một
+    delta actuator cố định vì tác động của quạt phụ thuộc điều kiện biên và
+    chênh lệch trạng thái trong/ngoài nhà kính.
 
     history_rows: kết quả db.get_training_window(), sắp xếp thời gian TĂNG DẦN,
                   cần tối thiểu window+1 bản ghi.

@@ -5,7 +5,7 @@
 //   - Đồng hồ currentHour/isPlayingTime đã có sẵn trong 3d_twin.js (vốn chỉ
 //     điều khiển hiệu ứng mặt trời/bầu trời) làm NGUỒN THỜI GIAN DUY NHẤT,
 //     để dữ liệu mô phỏng và cảnh 3D luôn đồng bộ.
-//   - ACTUATOR_EFFECTS/ENV_DRIFT/ACTUATOR_RULES/evaluatePlant/roofEffectKey
+//   - ACTUATOR_EFFECTS/ENV_DRIFT/ACTUATOR_RULES/evaluatePlant/shadeEffectKey
 //     đã có sẵn trong model.js (dùng chung với Physics-based Prediction Layer
 //     ở backend/prediction.py) — cùng MỘT bộ luật vật lý cho cả dự đoán lẫn
 //     mô phỏng hiển thị, không phát minh lại.
@@ -14,6 +14,23 @@
 // (app.js) tự động bỏ qua dữ liệu thật, nhường quyền hiển thị cho tick ở đây.
 
 let simState = null;   // null = tắt (dùng dữ liệu Wokwi/MySQL thật); object = đang mô phỏng
+let lastSimPlantHPSyncMs = 0;
+
+function syncSimulationPlantHP(reading) {
+  const now = Date.now();
+  if (now - lastSimPlantHPSyncMs < 3000) return;
+  lastSimPlantHPSyncMs = now;
+  fetch(API + "/api/plant-hp/evaluate", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(reading)
+  })
+    .then(res => res.ok ? res.json() : null)
+    .then(payload => {
+      if (payload?.summary) updatePlantHPUI(payload.summary);
+    })
+    .catch(err => console.error("Cannot sync simulated Plant HP:", err));
+}
 
 // Tốc độ mô phỏng: số "model-tick" (đơn vị hiệu chỉnh ACTUATOR_EFFECTS/ENV_DRIFT,
 // vốn tính theo mỗi 10s mô phỏng) tương đương mỗi GIÂY THỰC trôi qua. Giá trị
@@ -65,7 +82,7 @@ function startSimulation(baseReading) {
     // null = AUTO (theo hysteresis ACTUATOR_RULES); true/false = ép buộc thủ
     // công qua các nút ON/OFF sẵn có (sendCommand() trong app.js đã tự gán
     // vào đây — xem đoạn "if (typeof simState !== 'undefined' && simState)").
-    fanCmd: null, pumpCmd: null, roofCmd: null,
+    fanCmd: null, pumpCmd: null, shadeCmd: null,
     // Trạng thái AUTO hiện tại (có nhớ để tạo hysteresis, không dao động liên tục ở ngưỡng)
     fanAuto: false, pumpAuto: false,
     accumSec: 0,
@@ -96,21 +113,24 @@ function runSimTick(deltaRealSeconds) {
   else if (simState.soil > ACTUATOR_RULES.pump.offAbove)  simState.pumpAuto = false;
   const pumpOn = resolveActuator(simState.pumpCmd, simState.pumpAuto);
 
-  let roofAngle;
-  if (simState.roofCmd !== null && simState.roofCmd !== undefined) {
-    roofAngle = simState.roofCmd;
-  } else if (simState.temp > ACTUATOR_RULES.roof.fullOpenAbove) {
-    roofAngle = 0;
+  let shadeAngle;
+  if (simState.shadeCmd !== null && simState.shadeCmd !== undefined) {
+    shadeAngle = simState.shadeCmd;
   } else if (
-    simState.light > ACTUATOR_RULES.roof.halfOpenLightMin &&
-    currentHour >= ACTUATOR_RULES.roof.halfOpenHourStart &&
-    currentHour <= ACTUATOR_RULES.roof.halfOpenHourEnd
+    simState.temp > ACTUATOR_RULES.shade.fullDeployTempAbove
+    || simState.light > ACTUATOR_RULES.shade.fullDeployLightMin
   ) {
-    roofAngle = 45;
+    shadeAngle = 90;
+  } else if (
+    simState.light > ACTUATOR_RULES.shade.halfDeployLightMin &&
+    currentHour >= ACTUATOR_RULES.shade.activeHourStart &&
+    currentHour <= ACTUATOR_RULES.shade.activeHourEnd
+  ) {
+    shadeAngle = 45;
   } else {
-    roofAngle = 90;
+    shadeAngle = 0;
   }
-  const roofKey = roofEffectKey(roofAngle);
+  const shadeKey = shadeEffectKey(shadeAngle);
 
   // --- Vật lý: nhiệt độ/độ ẩm/đất dùng ACTUATOR_EFFECTS + ENV_DRIFT (model.js,
   // cùng bộ hằng số với backend/prediction.py) + "kéo dần" về baseline ngày/đêm
@@ -120,23 +140,22 @@ function runSimTick(deltaRealSeconds) {
   // Hệ số "kéo về baseline" (trước là 0.1) quá yếu so với chu kỳ ngày/đêm đã
   // được tua nhanh cho demo (24h mô phỏng ≈ vài chục giây thực): nhiệt độ gần
   // như không kịp dao động theo baseline, luôn quanh quẩn giữa 28-30°C nên
-  // fan/mái không bao giờ tự bật. Tăng lên 4 để nhiệt độ bám sát biên độ
+  // fan/mái che không bao giờ tự bật. Tăng lên 4 để nhiệt độ bám sát biên độ
   // ngày/đêm (chạm ngưỡng ON của fan ~30°C ban trưa, tụt dưới OFF ~28°C ban
   // đêm), actuator AUTO mới có cơ hội phản ứng thật.
   simState.temp += (baseline.temp - simState.temp) * Math.min(1, 4 * ticks);
   simState.temp  = applyEffectScaled(simState.temp, { delta: ENV_DRIFT.temp, limit: undefined }, ticks);
   if (fanOn)  simState.temp = applyEffectScaled(simState.temp, ACTUATOR_EFFECTS.fan.temp, ticks);
-  simState.temp = applyEffectScaled(simState.temp, ACTUATOR_EFFECTS.roof[roofKey].temp ?? { delta: 0 }, ticks);
+  simState.temp = applyEffectScaled(simState.temp, ACTUATOR_EFFECTS.shade[shadeKey].temp ?? { delta: 0 }, ticks);
 
   simState.hum = applyEffectScaled(simState.hum, { delta: ENV_DRIFT.hum, limit: undefined }, ticks);
   if (fanOn)  simState.hum = applyEffectScaled(simState.hum, ACTUATOR_EFFECTS.fan.hum, ticks);
   if (pumpOn) simState.hum = applyEffectScaled(simState.hum, ACTUATOR_EFFECTS.pump.hum, ticks);
-  simState.hum = applyEffectScaled(simState.hum, ACTUATOR_EFFECTS.roof[roofKey].hum ?? { delta: 0 }, ticks);
 
   simState.soil = applyEffectScaled(simState.soil, { delta: ENV_DRIFT.soil, limit: undefined }, ticks);
   if (pumpOn) simState.soil = applyEffectScaled(simState.soil, ACTUATOR_EFFECTS.pump.soil, ticks);
 
-  simState.light = baseline.light + (ACTUATOR_EFFECTS.roof[roofKey].light?.delta ?? 0);
+  simState.light = baseline.light + (ACTUATOR_EFFECTS.shade[shadeKey].light?.delta ?? 0);
 
   simState.temp  = clampEnv("temp",  simState.temp);
   simState.hum   = clampEnv("hum",   simState.hum);
@@ -160,12 +179,13 @@ function runSimTick(deltaRealSeconds) {
     motion_detected: simState.motion,
     fan_status:      fanOn,
     pump_status:     pumpOn,
-    servo_angle:     roofAngle,
+    servo_angle:     shadeAngle,
     light_status:    simState.motion && simState.light < ACTUATOR_RULES.motionLight.triggerBelowLight,
     security_mode:   true,
     created_at:      new Date().toISOString().slice(0, 19).replace("T", " "),
   };
   reading.plant_health = evaluatePlant(reading.temperature, reading.soil_moisture, reading.humidity);
+  syncSimulationPlantHP(reading);
 
   updateCards(reading);
   updatePlantHealth(reading);
@@ -207,11 +227,11 @@ function runSimTick(deltaRealSeconds) {
 // phút cho baseline ngày/đêm tự trôi tới ngưỡng.
 function triggerExtremeScenario() {
   if (!simState) return;
-  simState.temp  = 40;   // > roof.fullOpenAbove (34) và fan.onAbove (30)
+  simState.temp  = 40;   // > shade.fullDeployTempAbove (34) và fan.onAbove (30)
   simState.hum   = 15;   // < CRITICAL.hum (20)
   simState.soil  = 10;   // < pump.onBelow (45), gần DEAD.soil (5)
   simState.light = 90;
-  simState.fanCmd = null;   simState.pumpCmd = null;   simState.roofCmd = null;
+  simState.fanCmd = null;   simState.pumpCmd = null;   simState.shadeCmd = null;
   simState.fanAuto = true;  simState.pumpAuto = true;  // phản ứng ngay, không đợi tick kiểm tra ngưỡng
   // Đồng bộ nút AUTO ở panel "Thiết bị & Điều khiển" (app.js) nếu người dùng
   // trước đó có ép buộc thủ công — tránh UI hiển thị sai lệch với simState.

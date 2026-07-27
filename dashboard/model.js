@@ -30,7 +30,7 @@ function evaluatePlant(temp, soil, hum) {
 }
 
 // ─── Actuator control rules ────────────────────────────────────────────────
-// Mirrors controlFan / controlPump / controlRoof / controlMotionLight in sketch.ino
+// Mirrors controlFan / controlPump / controlShade / controlMotionLight in sketch.ino
 const ACTUATOR_RULES = {
   fan: {
     onAbove:  30,   // °C — turn fan ON  when temp > this
@@ -40,11 +40,12 @@ const ACTUATOR_RULES = {
     onBelow:  45,   // % soil — turn pump ON  when soil < this
     offAbove: 65,   // % soil — turn pump OFF when soil > this
   },
-  roof: {
-    fullOpenAbove:     34,  // °C — roof fully open (0°) when temp > this
-    halfOpenLightMin:  75,  // % light — half-open (45°) condition
-    halfOpenHourStart: 11,  // hour range for half-open
-    halfOpenHourEnd:   14,
+  shade: {
+    fullDeployTempAbove: 34,
+    fullDeployLightMin:  85,
+    halfDeployLightMin:  65,
+    activeHourStart:     10,
+    activeHourEnd:       16,
   },
   motionLight: {
     triggerBelowLight: 25,    // % light — motion light activates when light < this
@@ -61,7 +62,7 @@ const ACTUATOR_RULES = {
 // Calibration basis:
 //   Fan    : greenhouse fan ≈ 2–3 °C/min → 0.4 °C/tick; equilibrium at ~22 °C (ambient)
 //   Pump   : drip irrigation raises soil ~3 %/tick; saturates at field capacity ~95 %
-//   Roof   : stack ventilation effect; equalises with outdoor ambient over ~10 min
+//   Shade  : external screen reduces solar gain; it does not ventilate the shell
 const ACTUATOR_EFFECTS = {
   fan: {
     temp: { delta: -0.4, limit: 22 },  // cools toward outdoor ambient (22 °C)
@@ -71,26 +72,24 @@ const ACTUATOR_EFFECTS = {
     soil: { delta: +3.0, limit: 95 },  // field capacity — soil can't absorb beyond 95 %
     hum:  { delta: +1.0, limit: 88 },  // irrigation mist tops out at 88 % RH
   },
-  roof: {
-    open: {                                       // servo_angle = 0 — full ventilation
-      temp:  { delta: -0.8, limit: 24 },          // equalises with ambient ~24 °C
-      hum:   { delta: +0.2, limit: 80 },          // outdoor air ~80 % RH
+  shade: {
+    retracted: {},                                // 0° — no shade
+    half: {                                       // 45° — half deployed
+      temp:  { delta: -0.15, limit: 24 },
+      light: { delta: -25,   limit: 0 },
     },
-    half: {                                       // servo_angle = 45 — partial shade
-      temp:  { delta: -0.3, limit: 26 },          // gentle cooling equilibrium
-      light: { delta: -6,   limit: 10 },          // shade floor ~10 % (never fully dark)
-    },
-    closed: {                                     // servo_angle = 90 — sealed
-      temp:  { delta: +0.2, limit: 55 },          // greenhouse heat cap ~55 °C
+    full: {                                       // 90° — fully deployed
+      temp:  { delta: -0.30, limit: 24 },
+      light: { delta: -55,   limit: 0 },
     },
   },
 };
 
-// Map servo angle → roof state key used in ACTUATOR_EFFECTS.roof
-function roofEffectKey(angle) {
-  if (angle <= 0)  return "open";
+// Map servo angle → shade state key used in ACTUATOR_EFFECTS.shade
+function shadeEffectKey(angle) {
+  if (angle <= 0)  return "retracted";
   if (angle < 90)  return "half";
-  return "closed";
+  return "full";
 }
 
 // Apply one actuator effect step.
@@ -122,8 +121,8 @@ function computeTrendDelta(sensor, reading) {
   let delta = ENV_DRIFT[sensor] ?? 0;
   if (reading.fan_status)  delta += ACTUATOR_EFFECTS.fan[sensor]?.delta  ?? 0;
   if (reading.pump_status) delta += ACTUATOR_EFFECTS.pump[sensor]?.delta ?? 0;
-  const roofKey = roofEffectKey(reading.servo_angle ?? 90);
-  delta += ACTUATOR_EFFECTS.roof[roofKey]?.[sensor]?.delta ?? 0;
+  const shadeKey = shadeEffectKey(reading.servo_angle ?? 0);
+  delta += ACTUATOR_EFFECTS.shade[shadeKey]?.[sensor]?.delta ?? 0;
   return delta;
 }
 

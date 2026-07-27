@@ -1,115 +1,90 @@
-import os
-import sys
+"""Start the Flask backend and static dashboard together."""
+
+from __future__ import annotations
+
 import json
-import time
+import os
 import subprocess
+import sys
+import time
 import urllib.request
 
-# Fix Windows terminal encoding so Vietnamese/Unicode print() calls don't crash
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
-BACKEND_DIR  = os.path.join(PROJECT_DIR, "backend")
-VENV_PYTHON  = os.path.join(BACKEND_DIR, "greenhouse_wokwi", "Scripts", "python.exe")
-FLASK_PORT   = 5000
-
-# ─────────────────────────────────────────────
-def step(n, total, msg):
-    print(f"[{n}/{total}] {msg}")
-
-def ok(msg):
-    print(f"      ✓ {msg}\n")
-
-def fail(msg):
-    print(f"      ✗ {msg}\n")
-    sys.exit(1)
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKEND_DIR = os.path.join(PROJECT_DIR, "backend")
+FLASK_PORT = 5000
 
 
-
-# ─────────────────────────────────────────────
-def start_flask(python_exe=VENV_PYTHON):
-    step(1, 2, "Starting Flask backend...")
-    proc = subprocess.Popen(
-        [python_exe, "app.py"],
-        cwd=BACKEND_DIR,
+def find_venv_python() -> str:
+    candidates = (
+        os.path.join(BACKEND_DIR, "venv", "Scripts", "python.exe"),
+        os.path.join(BACKEND_DIR, ".venv", "Scripts", "python.exe"),
+        os.path.join(
+            BACKEND_DIR, "greenhouse_wokwi", "Scripts", "python.exe"
+        ),
     )
-    # Wait up to 8s for Flask + MySQL to be ready
-    for i in range(8):
+    return next((path for path in candidates if os.path.exists(path)), sys.executable)
+
+
+def wait_for_backend(process: subprocess.Popen, timeout_seconds: int = 12) -> None:
+    for _ in range(timeout_seconds):
         time.sleep(1)
-        if proc.poll() is not None:
-            fail("Flask crashed on startup — check MySQL credentials in backend/db.py")
+        if process.poll() is not None:
+            raise RuntimeError(
+                "Flask stopped during startup. Check backend/config.py and MySQL."
+            )
         try:
             with urllib.request.urlopen(
                 f"http://localhost:{FLASK_PORT}/api/test", timeout=2
-            ) as r:
-                data = json.load(r)
-                if data.get("status") == "ok":
-                    ok(f"Flask ready  —  MySQL rows: {data['rows']}")
-                    return proc
-                else:
-                    fail(f"Flask started but DB error: {data.get('detail')}")
+            ) as response:
+                payload = json.load(response)
+            if payload.get("status") == "ok":
+                print(f"[OK] Flask ready - MySQL rows: {payload['rows']}")
+                return
         except Exception:
-            pass
-    fail("Flask did not respond on /api/test after 8s — check MySQL is running")
+            continue
+    raise RuntimeError("Flask did not become ready within 12 seconds.")
 
-# ─────────────────────────────────────────────
-def start_dashboard():
-    step(2, 2, "Starting Dashboard (localhost:3000)...")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "http.server", "3000"],
-        cwd=os.path.join(PROJECT_DIR, "dashboard"),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+
+def main() -> None:
+    python_exe = find_venv_python()
+    print("Greenhouse Digital Twin")
+    print(f"Python: {python_exe}")
+
+    backend = subprocess.Popen(
+        [python_exe, "app.py"],
+        cwd=BACKEND_DIR,
     )
-    ok("Dashboard running  →  http://localhost:3000")
-    return proc
-
-# ─────────────────────────────────────────────
-def print_summary():
-    print("══════════════════════════════════════════")
-    print(f"  Flask      →  http://localhost:{FLASK_PORT}")
-    print(f"  Dashboard  →  http://localhost:3000")
-    print("══════════════════════════════════════════")
-    print("  Firmware ready — start Wokwi in VS Code")
-    print("  (F1 → \"Wokwi: Start Simulator\")")
-    print("══════════════════════════════════════════")
-    print("  Ctrl+C to stop Flask + Dashboard\n")
-
-# ─────────────────────────────────────────────
-def main():
-    print("\n------------------------------------------")
-    print("       Greenhouse Project Launcher        ")
-    print("------------------------------------------\n")
-
-    if not os.path.exists(VENV_PYTHON):
-        fail(
-            f"venv not found at:\n"
-            f"        {VENV_PYTHON}\n\n"
-            f"      Create it with:\n"
-            f"        cd backend\n"
-            f"        python -m venv greenhouse_wokwi\n"
-            f"        greenhouse_wokwi\\Scripts\\activate\n"
-            f"        pip install -r requirements.txt"
-        )
-
-    print(f"      Using venv: {VENV_PYTHON}\n")
-
-    flask_proc     = start_flask(VENV_PYTHON)
-    dashboard_proc = start_dashboard()
-
-    print_summary()
-
+    dashboard = None
     try:
-        flask_proc.wait()
+        wait_for_backend(backend)
+        dashboard = subprocess.Popen(
+            [sys.executable, "-m", "http.server", "3000"],
+            cwd=os.path.join(PROJECT_DIR, "dashboard"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print("[OK] Dashboard: http://localhost:3000")
+        print("[INFO] Start Wokwi with: F1 -> Wokwi: Start Simulator")
+        print("[INFO] Press Ctrl+C to stop.")
+        backend.wait()
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print("\nStopping Greenhouse Digital Twin...")
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}")
+        raise SystemExit(1) from exc
     finally:
-        flask_proc.terminate()
-        dashboard_proc.terminate()
-        print("✓ All processes stopped")
+        if backend.poll() is None:
+            backend.terminate()
+        if dashboard and dashboard.poll() is None:
+            dashboard.terminate()
+        print("[OK] Processes stopped.")
+
 
 if __name__ == "__main__":
     main()

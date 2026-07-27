@@ -4,7 +4,8 @@ const SIM_SPEED        = 12;                                      // 1 simulated
 const LATEST_INTERVAL  = Math.round(10_000 / SIM_SPEED);         // 833 ms
 const HISTORY_INTERVAL = Math.round(30_000 / SIM_SPEED);         // 2500 ms
 const SPARK_MAX        = 20;
-const PREDICT_HORIZON_MINUTES = 30;   // dự báo 30 phút MÔ PHỎNG tới (Giai đoạn 2 - Analytics Layer)
+const PREDICT_HORIZON_MINUTES = 30;
+let lastControlState = null;
 
 // ─── Auth helpers ─────────────────────────────────
 function getAuthHeaders() {
@@ -173,13 +174,159 @@ function updateCards(d) {
   updateSparklines(d);
 }
 
-// ─── Plant health ─────────────────────────────────
+// ─── Plant health & Multi-Crop HP System ─────────
+window.selectedCrop = "tomato";
+window.latestPlantHPSummary = null;
+
+const CROP_TITLES = {
+  "tomato": "🍅 Cà chua (Tomato)",
+  "strawberry": "🍓 Dâu tây (Strawberry)",
+  "cantaloupe": "🍈 Dưa lưới (Cantaloupe)"
+};
+
+function updatePlantHPUI(hpSummary) {
+  if (!hpSummary) return;
+  window.latestPlantHPSummary = hpSummary;
+
+  // 1. Update 3 Mini Crop Cards
+  ["tomato", "strawberry", "cantaloupe"].forEach(cropKey => {
+    const data = hpSummary[cropKey];
+    if (!data) return;
+
+    const hpEl = document.getElementById("hp-mini-" + cropKey);
+    const statusEl = document.getElementById("status-mini-" + cropKey);
+
+    const visualClass = {
+      HEALTHY: "GOOD",
+      STRESSED: "SLOW",
+      WEAK: "DECLINE",
+      CRITICAL: "CRITICAL",
+      DEAD: "DEAD"
+    }[data.health_status] || "SLOW";
+    const visualColor = {
+      GOOD: "var(--green)",
+      SLOW: "#f59e0b",
+      DECLINE: "var(--orange)",
+      CRITICAL: "var(--red)",
+      DEAD: "var(--red)"
+    }[visualClass];
+
+    if (hpEl) {
+      hpEl.textContent = data.hp + " HP";
+      hpEl.style.color = visualColor;
+    }
+    if (statusEl) {
+      statusEl.textContent =
+        `${data.health_status || "--"} · MT: ${data.environment_status || "--"}`;
+      statusEl.style.color = visualColor;
+    }
+  });
+
+  // 2. Update Active Selected Crop Bar
+  const activeCrop = hpSummary[window.selectedCrop] || hpSummary["tomato"];
+  const titleEl = document.getElementById("active-crop-title");
+  const hpValEl = document.getElementById("active-crop-hp-val");
+  const statusBadge = document.getElementById("active-crop-status");
+  const fillEl = document.getElementById("hp-bar-fill");
+
+  if (titleEl) titleEl.textContent = CROP_TITLES[window.selectedCrop] || activeCrop.name;
+  if (hpValEl) hpValEl.textContent = activeCrop.hp;
+  if (statusBadge) {
+    const activeClass = {
+      HEALTHY: "GOOD",
+      STRESSED: "SLOW",
+      WEAK: "DECLINE",
+      CRITICAL: "CRITICAL",
+      DEAD: "DEAD"
+    }[activeCrop.health_status] || "SLOW";
+    statusBadge.textContent =
+      `${activeCrop.health_status || "--"} · Môi trường ${activeCrop.environment_status || "--"}`;
+    statusBadge.className = "plant-badge " + activeClass;
+  }
+  if (fillEl) {
+    fillEl.style.width = activeCrop.hp + "%";
+    if (activeCrop.health_status === "DEAD" || activeCrop.health_status === "CRITICAL") {
+      fillEl.style.background = "linear-gradient(90deg, #ef4444, #dc2626)";
+    } else if (activeCrop.health_status === "STRESSED" || activeCrop.health_status === "WEAK") {
+      fillEl.style.background = "linear-gradient(90deg, #f59e0b, #fbbf24)";
+    } else {
+      fillEl.style.background = "linear-gradient(90deg, #22c55e, #4ade80)";
+    }
+  }
+}
+
+function updateClosedLoopBanner(alert) {
+  const banner = document.getElementById("closed-loop-banner");
+  const textEl = document.getElementById("closed-loop-text");
+  const statusEl = document.getElementById("closed-loop-status");
+  if (!banner || !textEl || !statusEl) return;
+
+  const visibleStatuses = new Set([
+    "advisory", "confirming", "executed", "already_active",
+    "blocked_manual_override", "blocked_cooldown",
+    "blocked_stale_data", "blocked_model_unavailable", "released"
+  ]);
+  if (!alert || !visibleStatuses.has(alert.status)) {
+    banner.style.display = "none";
+    return;
+  }
+
+  const fallback = {
+    advisory: "Mô hình đề xuất can thiệp.",
+    confirming: "Đang chờ dự báo xác nhận lần tiếp theo.",
+    executed: "Digital Twin đã phát lệnh điều khiển.",
+    already_active: "Lệnh tự động đang có hiệu lực.",
+    blocked_manual_override: "Lệnh tự động bị chặn bởi ghi đè thủ công.",
+    blocked_cooldown: "Lệnh đang trong thời gian chờ an toàn.",
+    blocked_stale_data: "Dữ liệu cảm biến đã cũ.",
+    blocked_model_unavailable: "Mô hình PGML chưa sẵn sàng.",
+    released: "Điều kiện đã an toàn, hệ thống trả thiết bị về chế độ cục bộ."
+  };
+  textEl.textContent = alert.messages?.length
+    ? alert.messages.join(" | ")
+    : fallback[alert.status];
+  statusEl.textContent = (alert.mode || "ADVISORY") + " · " + alert.status;
+  banner.classList.toggle("executed", alert.status === "executed");
+  banner.classList.toggle("blocked", alert.status.startsWith("blocked_"));
+  banner.style.display = "flex";
+}
+
+function updateControlState(state) {
+  if (!state) return;
+  lastControlState = state;
+  const mode = state.mode || state.control_mode || "ADVISORY";
+  document.querySelectorAll(".btn-mode").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+
+  const descriptions = {
+    OFF: "Chỉ giám sát và dự báo; không đề xuất hoặc tự phát lệnh.",
+    ADVISORY: "Hiện đề xuất để người dùng quyết định. Đây là chế độ mặc định an toàn.",
+    AUTO: "Tự phát lệnh sau hai dự báo liên tiếp và áp dụng giới hạn an toàn."
+  };
+  const description = document.getElementById("control-mode-description");
+  if (description) {
+    description.textContent = descriptions[mode] || descriptions.ADVISORY;
+  }
+
+  const decision = state.last_decision || state.controller?.last_decision;
+  const decisionEl = document.getElementById("latest-control-decision");
+  if (decisionEl && decision) {
+    const commands = decision.applied_commands || decision.commands || {};
+    const commandText = Object.keys(commands).length
+      ? " · " + JSON.stringify(commands)
+      : "";
+    decisionEl.textContent = `${decision.status || "idle"}${commandText}`;
+    updateClosedLoopBanner(decision);
+  }
+}
+
 function updatePlantHealth(d) {
-  const state = evaluatePlant(d.temperature, d.soil_moisture, d.humidity);
-  const badge = document.getElementById("plant-badge");
-  badge.textContent = state;
-  badge.className   = "plant-badge " + state;
-  document.getElementById("plant-hint").textContent = PLANT_HINTS[state] ?? "";
+  if (d.plant_hp) {
+    updatePlantHPUI(d.plant_hp);
+  }
+  updateClosedLoopBanner(d.closed_loop_alert || null);
+  if (d.control_state) updateControlState(d.control_state);
 }
 
 // ─── Actuators ────────────────────────────────────
@@ -201,7 +348,7 @@ function updateActuators(d) {
     const roofEl = document.getElementById("act-roof");
     if (roofEl) {
       roofEl.textContent = d.servo_angle + "°";
-      roofEl.className   = "actuator-badge " + (d.servo_angle < 90 ? "on" : "off");
+      roofEl.className   = "actuator-badge " + (d.servo_angle > 0 ? "on" : "off");
     }
   }
 
@@ -227,42 +374,76 @@ function updateActuators(d) {
 let sseSource = null;
 let sseActive = false;
 
+let lastPredictFetchTime = 0;
+
 function appendToCharts(row) {
-  // Cắt bỏ đoạn dự báo (nếu có) trước khi thêm điểm thật — nếu không, nhãn
-  // "hiện tại" sẽ bị chèn vào sau các nhãn "tương lai" đã vẽ bởi updateForecast().
-  stripForecastTail();
+  const now = Date.now();
+  const shouldReFetchPredict = (now - lastPredictFetchTime > 30000);
+
+  if (shouldReFetchPredict) {
+    stripForecastTail();
+  }
 
   const label = new Date((row.created_at || "").replace(" ", "T"))
     .toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const MAX = 100;
+
   [chartTemp, chartHum, chartSoil].forEach(ch => {
-    if (ch.data.labels.length >= MAX) {
+    if (chartHistoryLen >= MAX) {
       ch.data.labels.shift();
       ch.data.datasets.forEach(ds => ds.data.shift());
       chartHistoryLen--;
     }
   });
-  chartTemp.data.labels.push(label);
-  chartTemp.data.datasets[0].data.push(row.temperature);
-  chartTemp.data.datasets[1].data.push(ACTUATOR_RULES.fan.onAbove);
-  chartTemp.data.datasets[2].data.push(ACTUATOR_RULES.roof.fullOpenAbove);
-  chartTemp.data.datasets[3].data.push(null);   // giữ đồng bộ độ dài; forecast sẽ được vẽ lại bởi fetchPredict()
-  chartTemp.update("none");
 
-  chartHum.data.labels.push(label);
-  chartHum.data.datasets[0].data.push(row.humidity);
-  chartHum.data.datasets[1].data.push(null);
-  chartHum.update("none");
+  const hasForecast = chartTemp.data.labels.length > chartHistoryLen;
 
-  chartSoil.data.labels.push(label);
-  chartSoil.data.datasets[0].data.push(row.soil_moisture);
-  chartSoil.data.datasets[1].data.push(row.light_level);
-  chartSoil.data.datasets[2].data.push(ACTUATOR_RULES.pump.onBelow);
-  chartSoil.data.datasets[3].data.push(ACTUATOR_RULES.pump.offAbove);
-  chartSoil.data.datasets[4].data.push(null);
-  chartSoil.update("none");
+  if (hasForecast) {
+    chartTemp.data.labels.splice(chartHistoryLen, 0, label);
+    chartTemp.data.datasets[0].data.splice(chartHistoryLen, 0, row.temperature);
+    chartTemp.data.datasets[1].data.splice(chartHistoryLen, 0, ACTUATOR_RULES.fan.onAbove);
+    chartTemp.data.datasets[2].data.splice(chartHistoryLen, 0, ACTUATOR_RULES.shade.fullDeployTempAbove);
+    chartTemp.data.datasets[3].data.splice(chartHistoryLen - 1, 0, null);
+
+    chartHum.data.labels.splice(chartHistoryLen, 0, label);
+    chartHum.data.datasets[0].data.splice(chartHistoryLen, 0, row.humidity);
+    chartHum.data.datasets[1].data.splice(chartHistoryLen - 1, 0, null);
+
+    chartSoil.data.labels.splice(chartHistoryLen, 0, label);
+    chartSoil.data.datasets[0].data.splice(chartHistoryLen, 0, row.soil_moisture);
+    chartSoil.data.datasets[1].data.splice(chartHistoryLen, 0, row.light_level);
+    chartSoil.data.datasets[2].data.splice(chartHistoryLen, 0, ACTUATOR_RULES.pump.onBelow);
+    chartSoil.data.datasets[3].data.splice(chartHistoryLen, 0, ACTUATOR_RULES.pump.offAbove);
+    chartSoil.data.datasets[4].data.splice(chartHistoryLen - 1, 0, null);
+  } else {
+    chartTemp.data.labels.push(label);
+    chartTemp.data.datasets[0].data.push(row.temperature);
+    chartTemp.data.datasets[1].data.push(ACTUATOR_RULES.fan.onAbove);
+    chartTemp.data.datasets[2].data.push(ACTUATOR_RULES.shade.fullDeployTempAbove);
+    chartTemp.data.datasets[3].data.push(null);
+
+    chartHum.data.labels.push(label);
+    chartHum.data.datasets[0].data.push(row.humidity);
+    chartHum.data.datasets[1].data.push(null);
+
+    chartSoil.data.labels.push(label);
+    chartSoil.data.datasets[0].data.push(row.soil_moisture);
+    chartSoil.data.datasets[1].data.push(row.light_level);
+    chartSoil.data.datasets[2].data.push(ACTUATOR_RULES.pump.onBelow);
+    chartSoil.data.datasets[3].data.push(ACTUATOR_RULES.pump.offAbove);
+    chartSoil.data.datasets[4].data.push(null);
+  }
 
   chartHistoryLen++;
+
+  chartTemp.update("none");
+  chartHum.update("none");
+  chartSoil.update("none");
+
+  if (shouldReFetchPredict || !hasForecast) {
+    lastPredictFetchTime = now;
+    if (typeof fetchPredict === "function") fetchPredict(row);
+  }
 }
 
 function connectSSE() {
@@ -275,6 +456,11 @@ function connectSSE() {
     if (simState) return;   // đang mô phỏng (simulation.js) — bỏ qua dữ liệu SSE thật nếu Wokwi vẫn đang chạy song song
     let d;
     try { d = JSON.parse(e.data); } catch { return; }
+    if (d?.type === "control_state") {
+      updateControlState(d.control_state);
+      loadControlEvents();
+      return;
+    }
     if (!d || d.temperature == null) return;
     sseActive = true;
     setStatus("live", "LIVE");
@@ -296,7 +482,7 @@ function connectSSE() {
 
 // ─── Fetch latest ─────────────────────────────────
 async function fetchLatest() {
-  if (simState) return;   // đang ở chế độ mô phỏng (simulation.js) — không ghi đè bằng dữ liệu thật
+  if (simState || sseActive) return;   // đang ở chế độ mô phỏng hoặc SSE đang chạy
   try {
     const res = await fetch(API + "/api/latest", { headers: getAuthHeaders() });
     if (res.status === 401) { handle401(); return; }
@@ -324,7 +510,7 @@ const CHART_OPTS_BASE = {
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: "index", intersect: false },
-  animation:   { duration: 400 },
+  animation:   { duration: 0 },
   plugins: {
     legend: {
       position: "top",
@@ -389,7 +575,7 @@ function initCharts() {
           fill: true, tension: 0.35, pointRadius: 2, borderWidth: 2,
         },
         thresholdDS(`${ACTUATOR_RULES.fan.onAbove}°C — bật quạt`,       "rgba(227,179,65,0.75)"),
-        thresholdDS(`${ACTUATOR_RULES.roof.fullOpenAbove}°C — mở mái`, "rgba(248,81,73,0.55)"),
+        thresholdDS(`${ACTUATOR_RULES.shade.fullDeployTempAbove}°C — che nắng`, "rgba(248,81,73,0.55)"),
         forecastDS("Dự báo nhiệt độ", "#f85149"),
       ],
     },
@@ -471,7 +657,7 @@ function updateCharts(rows) {
   chartTemp.data.labels           = labels;
   chartTemp.data.datasets[0].data = sorted.map(r => r.temperature);
   chartTemp.data.datasets[1].data = Array(n).fill(ACTUATOR_RULES.fan.onAbove);
-  chartTemp.data.datasets[2].data = Array(n).fill(ACTUATOR_RULES.roof.fullOpenAbove);
+  chartTemp.data.datasets[2].data = Array(n).fill(ACTUATOR_RULES.shade.fullDeployTempAbove);
   chartTemp.data.datasets[3].data = Array(n).fill(null);   // xóa forecast cũ, chờ fetchPredict() vẽ lại
   chartTemp.update("none");
 
@@ -497,17 +683,14 @@ function updateForecast(forecastPoints, lastRow) {
 
   stripForecastTail();   // đảm bảo nối vào đúng ranh giới thật/dự báo, kể cả khi gọi 2 lần liên tiếp
   const histLen   = chartHistoryLen;
-  const baseTime  = new Date(lastRow.created_at.replace(" ", "T")).getTime();
   const anchorPad = Array(Math.max(histLen - 1, 0)).fill(null);
 
-  const forecastLabels = forecastPoints.map(p => {
-    const t = new Date(baseTime + p.real_seconds_ahead * 1000);
-    return t.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const forecastLabels = forecastPoints.map((p, idx) => {
+    const mins = p.minute_offset ?? ((idx + 1) * 5);
+    return `+${mins}m (AI)`;
   });
 
-  // Điểm neo (lastRow) đặt tại index histLen-1 — trùng đúng nhãn cuối cùng của
-  // lịch sử đã có sẵn, nên đường nét đứt bắt đầu đúng vị trí đường liền nét kết
-  // thúc (không có khoảng hở giữa thật và dự báo).
+  // Điểm neo (lastRow) đặt tại index histLen-1
   chartTemp.data.labels           = [...chartTemp.data.labels, ...forecastLabels];
   chartTemp.data.datasets[3].data = [...anchorPad, lastRow.temperature, ...forecastPoints.map(p => p.temperature)];
 
@@ -526,20 +709,29 @@ async function fetchPredict(lastRow) {
   if (!lastRow) return;
   try {
     const res = await fetch(
-      `${API}/api/predict?horizon_minutes=${PREDICT_HORIZON_MINUTES}`,
+      `${API}/api/predict?horizon_minutes=${PREDICT_HORIZON_MINUTES}&engine=hybrid`,
       { headers: getAuthHeaders() }
     );
     if (res.status === 401) { handle401(); return; }
     if (!res.ok) return;
     const d = await res.json();
-    if (d.forecast?.length) updateForecast(d.forecast, lastRow);
+    if (d.forecast?.length) {
+      updateForecast(d.forecast, lastRow);
+    }
+    if (d.closed_loop_alert) {
+      updateClosedLoopBanner(d.closed_loop_alert);
+    }
+    const badgeEl = document.getElementById("ai-badge");
+    if (badgeEl && d.engine_used) {
+      badgeEl.innerHTML = `<i class="fa-solid fa-brain"></i> ${d.engine_used}`;
+    }
   } catch {
     // silent — dự báo là tính năng bổ trợ, không chặn luồng dữ liệu thật nếu lỗi
   }
 }
 
 async function fetchHistory() {
-  if (typeof simState !== 'undefined' && simState) return;   // simulation builds its own chart history
+  if ((typeof simState !== 'undefined' && simState) || sseActive) return;   // simulation builds its own chart history
   try {
     const res = await fetch(API + "/api/history", { headers: getAuthHeaders() });
     if (res.status === 401) { handle401(); return; }
@@ -563,7 +755,16 @@ async function sendCommand(device, value) {
       headers: getAuthHeaders(),
       body:    JSON.stringify({ [device]: value }),
     });
-    if (res.status === 401) handle401();
+    if (res.status === 401) {
+      handle401();
+    } else if (res.ok) {
+      const payload = await res.json();
+      updateControlState({
+        mode: payload.control_mode,
+        manual_overrides: payload.manual_overrides
+      });
+      loadControlEvents();
+    }
   } catch {
     // silent
   }
@@ -571,7 +772,7 @@ async function sendCommand(device, value) {
   if (typeof simState !== 'undefined' && simState) {
     if      (device === "fan")   simState.fanCmd  = value;
     else if (device === "pump")  simState.pumpCmd = value;
-    else if (device === "servo") simState.roofCmd = value;
+    else if (device === "servo") simState.shadeCmd = value;
   }
 }
 
@@ -604,7 +805,7 @@ function setActiveBtn(device, valStr) {
     const roofEl = document.getElementById("act-roof");
     if (!roofEl) return;
     roofEl.textContent = angle + "°";
-    roofEl.className   = "actuator-badge " + (angle < 90 ? "on" : "off");
+    roofEl.className   = "actuator-badge " + (angle > 0 ? "on" : "off");
   }
 }
 
@@ -618,8 +819,71 @@ async function loadCommandState() {
     });
     setActiveBtn("servo", cmds.servo === null ? "null" : String(cmds.servo));
     setActiveBtn("security", String(cmds.security));
+    updateControlState(cmds.controller || {
+      mode: cmds.control_mode,
+      manual_overrides: cmds.manual_overrides
+    });
   } catch {
     // Flask chưa sẵn — bỏ qua
+  }
+}
+
+async function setControlMode(mode) {
+  try {
+    const res = await fetch(API + "/api/control-mode", {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ mode })
+    });
+    if (res.status === 401) { handle401(); return; }
+    if (!res.ok) return;
+    updateControlState(await res.json());
+    await loadCommandState();
+    loadControlEvents();
+  } catch (err) {
+    console.error("Cannot update control mode:", err);
+  }
+}
+
+function bindControlModes() {
+  document.querySelectorAll(".btn-mode").forEach(btn => {
+    btn.addEventListener("click", () => setControlMode(btn.dataset.mode));
+  });
+}
+
+function formatEventTime(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : date.toLocaleTimeString("vi-VN");
+}
+
+async function loadControlEvents() {
+  const list = document.getElementById("control-event-list");
+  if (!list) return;
+  try {
+    const res = await fetch(API + "/api/control-events?limit=6", {
+      headers: getAuthHeaders()
+    });
+    if (res.status === 401) { handle401(); return; }
+    if (!res.ok) return;
+    const events = await res.json();
+    if (!events.length) {
+      list.innerHTML = '<div class="control-event-empty">Chưa có sự kiện điều khiển.</div>';
+      return;
+    }
+    list.innerHTML = events.map(event => {
+      const reason = event.reason || JSON.stringify(event.commands || {});
+      return `
+        <div class="control-event">
+          <span class="control-event-time">${formatEventTime(event.created_at)}</span>
+          <span class="control-event-status">${event.control_mode} · ${event.status}</span>
+          <span>${reason}</span>
+        </div>`;
+    }).join("");
+  } catch (err) {
+    console.error("Cannot load control history:", err);
   }
 }
 
@@ -725,11 +989,11 @@ function bindControls() {
             secEl.className = "actuator-badge " + (value ? "on" : "off");
           }
         }
-        else if (device === "roof") {
+        else if (device === "servo") {
           const roofEl = document.getElementById("act-roof");
           if (roofEl) {
             roofEl.textContent = value !== null ? value + "°" : "--";
-            roofEl.className = "actuator-badge " + (value !== null && value < 90 ? "on" : "off");
+            roofEl.className = "actuator-badge " + (value !== null && value > 0 ? "on" : "off");
           }
         }
 
@@ -740,6 +1004,55 @@ function bindControls() {
       });
     });
   });
+}
+
+function bindPlantHPEvents() {
+  const cropSelect = document.getElementById("crop-selector");
+  if (cropSelect) {
+    cropSelect.addEventListener("change", (e) => {
+      window.selectedCrop = e.target.value;
+      if (window.latestPlantHPSummary) {
+        updatePlantHPUI(window.latestPlantHPSummary);
+      }
+    });
+  }
+
+  const resetBtn = document.getElementById("btn-reset-crop");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      try {
+        const token = localStorage.getItem("gh_token");
+        const res = await fetch(API + "/api/plant-hp/reset", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify({ crop: "all" })
+        });
+        const data = await res.json();
+        if (data.summary) {
+          updatePlantHPUI(data.summary);
+          alert("🎉 Đã trồng lại cây mới thành công! Điểm HP đã khôi phục về 100.");
+        }
+      } catch (err) {
+        console.error("Reset crop error:", err);
+      }
+    });
+  }
+}
+
+async function loadPlantHP() {
+  try {
+    const res = await fetch(API + "/api/plant-hp", {
+      headers: getAuthHeaders()
+    });
+    if (res.status === 401) { handle401(); return; }
+    if (!res.ok) return;
+    updatePlantHPUI(await res.json());
+  } catch (err) {
+    console.error("Cannot load Plant HP:", err);
+  }
 }
 
 // ─── INIT & AUTH ─────────────────────────────────────
@@ -770,8 +1083,12 @@ async function init() {
   initSparklines();
   initCharts();
   bindControls();
+  bindControlModes();
+  bindPlantHPEvents();
   connectSSE();
   await loadCommandState();
+  await loadControlEvents();
+  await loadPlantHP();
 
   await Promise.all([
       fetchLatest(), 
@@ -782,6 +1099,7 @@ async function init() {
 
   setInterval(fetchLatest,  LATEST_INTERVAL);
   setInterval(fetchHistory, HISTORY_INTERVAL);
+  setInterval(loadControlEvents, 15000);
 }
 
 init();

@@ -19,7 +19,7 @@
       "left": -325.6,
       "attrs": {}
     },
-    { "type": "wokwi-potentiometer", "id": "pot1", "top": 85.1, "left": -278.6, "attrs": {} },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 85.1, "left": -278.6, "attrs": { "value": "2660" } },
     {
       "type": "wokwi-servo",
       "id": "servo1",

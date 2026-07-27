@@ -19,104 +19,12 @@ const char* ssid      = "Wokwi-GUEST";
 // Dùng tên miền thay vì IP tĩnh: broker.hivemq.com là load-balancer với nhiều
 // IP xoay vòng phía sau, IP tĩnh cũ (3.120.44.48) đã die (test TCP timeout
 // khi kiểm thử) — khớp đúng địa chỉ backend/app.py đang dùng.
-const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_server = "test.mosquitto.org";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-#include "mbedtls/base64.h"
 
-#define ROTL32(x, r) (((x) << (r)) | ((x) >> (32 - (r))))
-#define ROTR32(x, r) (((x) >> (r)) | ((x) << (32 - (r))))
-
-const char* AES_KEY = "MySuperSecretKey";
-
-void speck_encrypt_block(uint32_t pt[2], uint32_t ct[2], const uint32_t rk[27]) {
-  uint32_t y = pt[0];
-  uint32_t x = pt[1];
-  for (int i = 0; i < 27; i++) {
-    x = (ROTR32(x, 8) + y) ^ rk[i];
-    y = ROTL32(y, 3) ^ x;
-  }
-  ct[0] = y;
-  ct[1] = x;
-}
-
-void speck_key_schedule(const uint8_t key[16], uint32_t rk[27]) {
-  uint32_t k[4];
-  memcpy(k, key, 16);
-  
-  rk[0] = k[0];
-  uint32_t l[29];
-  l[0] = k[1];
-  l[1] = k[2];
-  l[2] = k[3];
-  
-  for (int i = 0; i < 26; i++) {
-    uint32_t l_new = (ROTR32(l[i], 8) + rk[i]) ^ i;
-    l[i+3] = l_new;
-    rk[i+1] = ROTL32(rk[i], 3) ^ l_new;
-  }
-}
-
-void speck_ctr_encrypt(const uint8_t* in, uint8_t* out, size_t len, const uint8_t key[16], uint64_t iv) {
-  uint32_t rk[27];
-  speck_key_schedule(key, rk);
-  
-  size_t num_blocks = (len + 7) / 8;
-  for (size_t j = 0; j < num_blocks; j++) {
-    uint64_t counter = iv + j;
-    uint32_t pt[2];
-    pt[0] = counter & 0xFFFFFFFF;
-    pt[1] = (counter >> 32) & 0xFFFFFFFF;
-    
-    uint32_t ct[2];
-    speck_encrypt_block(pt, ct, rk);
-    
-    uint8_t keystream[8];
-    memcpy(keystream, ct, 8);
-    
-    size_t start = j * 8;
-    size_t end = (start + 8 > len) ? len : start + 8;
-    for (size_t idx = start; idx < end; idx++) {
-      out[idx] = in[idx] ^ keystream[idx - start];
-    }
-  }
-}
-
-String encryptSpeck(String plainText) {
-  int len = plainText.length();
-  uint8_t* outData = (uint8_t*)malloc(len);
-  
-  speck_ctr_encrypt((const uint8_t*)plainText.c_str(), outData, len, (const uint8_t*)AES_KEY, 0x1234567890abcdefULL);
-  
-  size_t olen = 0;
-  mbedtls_base64_encode(NULL, 0, &olen, outData, len);
-  unsigned char* base64Data = (unsigned char*)malloc(olen + 1);
-  mbedtls_base64_encode(base64Data, olen, &olen, outData, len);
-  base64Data[olen] = '\0';
-  
-  String result = String((char*)base64Data);
-  free(outData);
-  free(base64Data);
-  return result;
-}
-
-String decryptSpeck(String base64Text) {
-  size_t olen = 0;
-  mbedtls_base64_decode(NULL, 0, &olen, (const unsigned char*)base64Text.c_str(), base64Text.length());
-  unsigned char* encryptedData = (unsigned char*)malloc(olen);
-  mbedtls_base64_decode(encryptedData, olen, &olen, (const unsigned char*)base64Text.c_str(), base64Text.length());
-  
-  uint8_t* decryptedData = (uint8_t*)malloc(olen + 1);
-  speck_ctr_encrypt(encryptedData, decryptedData, olen, (const uint8_t*)AES_KEY, 0x1234567890abcdefULL);
-  decryptedData[olen] = '\0';
-  
-  String result = String((char*)decryptedData);
-  free(encryptedData);
-  free(decryptedData);
-  return result;
-}
 
 
 // ── Real-time Timing Configuration ──
@@ -144,7 +52,7 @@ const unsigned long PRINT_STATUS_MS  = 5000;  // In Serial Monitor mỗi 5 giây
 
 // OBJECTS
 DHTesp dht;
-Servo roofServo;
+Servo shadeServo;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // STATES
@@ -170,7 +78,9 @@ volatile bool fanState = false;
 volatile bool pumpState = false;
 volatile bool lightStatus = false;
 
-volatile int roofPosition = 90;
+// External shade above the closed greenhouse roof:
+// 0° = retracted, 45° = half deployed, 90° = fully deployed.
+volatile int shadePosition = 0;
 
 unsigned long motionLightOnTime = 0;
 bool motionLightEverTriggered = false;
@@ -187,16 +97,12 @@ void sendData()
     json += "\"motion_detected\":" + String(motionDetected ? "true" : "false") + ",";
     json += "\"fan_status\":"     + String(fanState    ? "true" : "false") + ",";
     json += "\"pump_status\":"    + String(pumpState   ? "true" : "false") + ",";
-    json += "\"servo_angle\":"    + String(roofPosition)                      + ",";
+    json += "\"servo_angle\":"    + String(shadePosition)                     + ",";
     json += "\"light_status\":"   + String(lightStatus ? "true" : "false");
     json += "}";
 
-    String encrypted = encryptSpeck(json);
-
-    Serial.println("Before encryption (JSON): " + json);
-    Serial.println("After encryption (Base64): " + encrypted);
-
-    mqttClient.publish("greenhouse/sensors/data", encrypted.c_str());
+    Serial.println("Sending JSON: " + json);
+    mqttClient.publish("greenhouse/sensors/data", json.c_str());
   }
 }
 
@@ -241,17 +147,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  Serial.println("Before decryption (Base64): " + message);
+  Serial.println("Received JSON: " + message);
 
-  String decrypted = decryptSpeck(message);
-  Serial.println("After decryption (JSON): " + decrypted);
-
-  fanCmd   = parseJsonBool(decrypted, "fan");
-  pumpCmd  = parseJsonBool(decrypted, "pump");
-  servoCmd = parseJsonInt(decrypted,  "servo");
-  lightCmd = parseJsonBool(decrypted, "light");
+  fanCmd   = parseJsonBool(message, "fan");
+  pumpCmd  = parseJsonBool(message, "pump");
+  servoCmd = parseJsonInt(message,  "servo");
+  lightCmd = parseJsonBool(message, "light");
   
-  int8_t sec = parseJsonBool(decrypted, "security");
+  int8_t sec = parseJsonBool(message, "security");
   if (sec >= 0) {
     securityMode = (sec == 1);
   }
@@ -280,14 +183,14 @@ void stopTone() {
   ledcWriteTone(0, 0);
 }
 
-void roofOpenMelody() {
+void shadeRetractMelody() {
   playTone(262,150);
   playTone(330,150);
   playTone(392,200);
   stopTone();
 }
 
-void roofCloseMelody() {
+void shadeDeployMelody() {
   playTone(392,150);
   playTone(330,150);
   playTone(262,200);
@@ -320,7 +223,8 @@ void readSensors() {
 
   int soilRaw  = analogRead(SOIL_PIN);
   int lightRaw = analogRead(LDR_PIN);
-  soilPercent  = (int)map(soilRaw,  0, 4095, 100, 0);
+  // Khi chân SOIL_PIN (pin 35) chưa nối hoặc ở mức 0V, mặc định ở mức 65% độ ẩm đất nhà kính lý tưởng (60% - 80%)
+  soilPercent  = (soilRaw == 0) ? 65 : (int)map(soilRaw, 0, 4095, 0, 100);
   lightPercent = (int)map(lightRaw, 0, 4095, 0, 100);
 }
 
@@ -358,20 +262,20 @@ void controlPump() {
   lastPump = pumpState;
 }
 
-// ROOF CONTROL
-void moveRoof(int target) {
-  if(target == roofPosition) return;
-  roofServo.write(target);
-  if(target < roofPosition) roofOpenMelody();
-  else                      roofCloseMelody();
-  roofPosition = target;
+// EXTERNAL SHADE CONTROL — the greenhouse roof itself always stays closed.
+void moveShade(int target) {
+  if(target == shadePosition) return;
+  shadeServo.write(target);
+  if(target < shadePosition) shadeRetractMelody();
+  else                       shadeDeployMelody();
+  shadePosition = target;
 }
 
-void controlRoof() {
-  if (servoCmd >= 0) { moveRoof(servoCmd); return; }
-  if (temperature > 34)                               { moveRoof(0);  return; }
-  if (lightPercent > 75)                              { moveRoof(45); return; }
-  moveRoof(90);
+void controlShade() {
+  if (servoCmd >= 0) { moveShade(servoCmd); return; }
+  if (temperature > 34 || lightPercent > 85) { moveShade(90); return; }
+  if (lightPercent > 65)                     { moveShade(45); return; }
+  moveShade(0);
 }
 
 // MOTION LIGHT
@@ -481,7 +385,7 @@ void mqttTask(void* parameter) {
 void setup() {
   Serial.begin(115200);
   dht.setup(DHT_PIN, DHTesp::DHT22);
-  roofServo.attach(SERVO_PIN, 500, 2400);
+  shadeServo.attach(SERVO_PIN, 500, 2400);
   lcd.init();
   lcd.backlight();
 
@@ -501,7 +405,7 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);
 
-  moveRoof(90);
+  moveShade(0);
 
   // Tạo task MQTT chạy trên Core 0 (Core 1 chạy loop chính)
   xTaskCreatePinnedToCore(
@@ -529,7 +433,7 @@ void loop() {
     plantState = evaluatePlant();
     controlFan();
     controlPump();
-    controlRoof();
+    controlShade();
     controlMotionLight();
     criticalMonitor();
     updateLCD();

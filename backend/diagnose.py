@@ -4,7 +4,7 @@ Pipeline diagnostic: tests each link in the chain independently.
   [A] Flask reachable?          → GET  localhost:5000/api/test
   [B] Flask can write to MySQL? → POST localhost:5000/api/sensor-data  (mock data)
   [C] Row actually in MySQL?    → SELECT sensor_data WHERE id = <new id>
-  [D] MQTT broker reachable?    → TCP connect to broker.hivemq.com:1883
+  [D] MQTT broker reachable?    → TCP connect to test.mosquitto.org:1883
 
 Run from the backend/ folder:
     greenhouse_wokwi\\Scripts\\python.exe diagnose.py
@@ -26,7 +26,7 @@ MOCK_PAYLOAD = json.dumps({
     "motion_detected": False,
     "fan_status":     False,
     "pump_status":    False,
-    "servo_angle":    90,
+    "servo_angle":    0,
     "light_status":   False,
 }).encode()
 
@@ -120,11 +120,11 @@ def check_flask_insert():
 
 # ─────────────────────────────────────────────────────────
 def check_mqtt_broker():
-    title("D  MQTT Broker reachable (broker.hivemq.com:1883) ?")
+    title("D  MQTT Broker reachable (test.mosquitto.org:1883) ?")
     try:
-        sock = socket.create_connection(("broker.hivemq.com", 1883), timeout=8)
+        sock = socket.create_connection(("test.mosquitto.org", 1883), timeout=8)
         sock.close()
-        passed("TCP connect to broker.hivemq.com:1883 OK")
+        passed("TCP connect to test.mosquitto.org:1883 OK")
         info("→ ESP32 và Flask đều có thể kết nối MQTT broker")
         return True
     except OSError as e:
